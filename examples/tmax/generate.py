@@ -36,6 +36,8 @@ def aggregate_agent_metrics(samples: list[Sample]) -> dict[str, float]:
     }
     for reason, count in Counter(m["end_reason"] for m in all_metrics).items():
         metrics[f"agent/end_reason/{reason}"] = count / len(all_metrics)
+    for reason, count in Counter(m["sandbox_lost_reason"] for m in all_metrics if "sandbox_lost_reason" in m).items():
+        metrics[f"agent/sandbox_lost_reason/{reason}"] = count / len(all_metrics)
     return metrics
 
 
