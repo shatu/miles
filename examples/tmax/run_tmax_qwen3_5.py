@@ -337,9 +337,13 @@ def execute(args: ScriptArgs):
     if not args.fully_async:
         # --fully-async selects its own rollout function, so agent/* metrics are logged only in sync mode.
         agent_args += "--rollout-function-path generate.RolloutFn "
-    if args.filter_zero_std:
+    if args.filter_zero_std:  # also drops groups with a missing reward
         agent_args += (
             "--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_reward_nonzero_std_filter "
+        )
+    else:  # a missing reward (a sandbox the fleet lost) drops its group rather than training on a false 0
+        agent_args += (
+            "--dynamic-sampling-filter-path miles.rollout.filter_hub.common_filters.apply_missing_reward_filter "
         )
 
     perf_args = (
