@@ -21,7 +21,7 @@ replica 0 the Ray head and joins the others to it.
 
 ``beaker:`` keys: cluster, workspace, budget, priority, preemptible, min_runtime, retries, nodes, gpus (per node),
 synchronized_start_timeout (multi-node: how long replicas wait for each other to start, default 1h),
-shared_memory, image, sandbox_shards, mirror_url (``auto``: the running registry_mirror.py mirrors), keep_last_n_checkpoints, weka (list of buckets, mounted at
+shared_memory, image, launcher (default examples/tmax/run_tmax_qwen3_5.py), sandbox_shards, mirror_url (``auto``: the running registry_mirror.py mirrors), keep_last_n_checkpoints, weka (list of buckets, mounted at
 /weka/<bucket>), dockerhub_username, secrets (env var -> Beaker secret), env (extra env vars).
 """
 
@@ -122,6 +122,7 @@ def _build_spec(
         "BEAKER_SKIP_DOCKER_SOCKET": "1",
         "PYTORCH_ALLOC_CONF": "expandable_segments:True",
         "DOCKERHUB_USERNAME": beaker.get("dockerhub_username", os.environ.get("DOCKERHUB_USERNAME", "")),
+        "LAUNCHER": beaker.get("launcher", ""),
         "SANDBOX_SHARDS": str(beaker.get("sandbox_shards", 1)),
         "MIRROR_URL": _mirror_url(beaker.get("mirror_url", "")),
         "KEEP_LAST_N_CHECKPOINTS": str(beaker.get("keep_last_n_checkpoints", 0)),

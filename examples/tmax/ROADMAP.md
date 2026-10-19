@@ -30,6 +30,7 @@ improves fidelity or visibility. **P2** is cleanup and rare cases.
 | Fully-async throughput metrics | `perf/rollout_time` measures the buffer drain, so `perf/tokens_per_gpu_per_sec` is meaningless and some `perf/longest_*` go negative; `rollout/zero_std/*` is computed after the filter and is always 0. Fix upstream or hide |
 | open-instruct metrics worth porting | Solve-rate distribution before the filter, solved vs unsolved trajectory length, advantage min/max/std, max train/rollout log-prob gap, episode and token counters, entropy (`--observe-training-entropy`) |
 | Podman 5.6.2 and crun 1.14.3 in the image | apt's podman 4.9 breaks exec framing under load (44 of 70 step failures in one 4-node run). Plan: a thin image derived from the official Miles image with podman, crun and docker-py baked in, launched with beaker-gantry |
+| Qwen3.5-35B-A3B | Launcher `run_tmax_qwen3_5_moe.py` and `configs/smoke_moe_sync.yaml` (EP 4, R3) on branch `shashank/tmax-qwen35-moe`; next: 4-GPU smoke, then a prod config. MTP training + EAGLE is wired but has not run. Eval conversion (`convert_qwen35_causallm_to_cg.py` grafts the 9B's vision weights) needs a MoE path |
 | Agents near their sandboxes | Every agent process runs on the head node, which also trains; open-instruct spreads its environment actors over the nodes. Run agents on the node of their sandbox |
 
 ## P2
