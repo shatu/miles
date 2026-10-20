@@ -1,6 +1,8 @@
 # smoke_moe_sync.yaml on one ai2/ceres node (8x H100 80GB). The 35B-A3B's bf16 weights (72 GB) do not fit one 80GB
 # GPU next to a KV cache, so each SGLang engine spans 4 GPUs (EP 4, as upstream's 8x H100 recipe), and training
 # shards the experts 8 ways (~41 GB of weights and fp32 grads per GPU; EP 4 would be ~65 GB).
+# Does not run yet: ceres has driver 570 (CUDA 12.8) and current Miles images need CUDA 13 (Beaker
+# 01M5BC5QJH7FTXWDXQ2770G5BQ failed at conversion, 2026-10-20). Kept as the 80GB-GPU layout.
 num_gpus_per_node: 8
 num_prompts: 64
 rollout_batch_size: 4

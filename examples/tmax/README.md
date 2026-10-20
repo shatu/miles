@@ -85,7 +85,7 @@ The sandboxes need a Docker-compatible API socket (podman), whose containers can
 `expert_model_parallel_size`, `rollout_routing_replay` (R3, on), `mtp_training` (off; with it the MTP head is trained
 and drafts EAGLE speculative decoding), `sglang_ep_size` and `sglang_moe_runner_backend`; its docstring has the
 details. On 80GB GPUs the bf16 weights (72 GB) need `rollout_num_gpus_per_engine` > 1, as in
-`configs/smoke_moe_sync_ceres.yaml` (8x H100). The default
+`configs/smoke_moe_sync_ceres.yaml` (8x H100; not runnable on ceres until it has a CUDA 13 driver). The default
 student, `Qwen3.5-35B-A3B-tmax-template`, is
 [`shatu/Qwen3.5-35B-A3B`](https://huggingface.co/shatu/Qwen3.5-35B-A3B) (private): `Qwen/Qwen3.5-35B-A3B` with
 `hamishivi/Qwen3.5-9B`'s chat-template change (see [Findings](#required-settings)).
