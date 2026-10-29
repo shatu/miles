@@ -24,12 +24,16 @@ import argparse
 import getpass
 import json
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
 from pathlib import Path
 
 import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from submit import image_spec  # noqa: E402
 
 _NAME = "tmax-registry-mirror"
 _REPO = Path(__file__).resolve().parents[4]
@@ -181,7 +185,7 @@ def _job_spec(args: argparse.Namespace, script: str, cpus: int = 16) -> dict:
         "tasks": [
             {
                 "name": "main",
-                "image": {"docker": args.image},
+                "image": image_spec(args.image),
                 "command": ["bash", "-c", command],
                 "datasets": [{"mountPath": "/weka/nora-default", "source": {"weka": "nora-default"}}],
                 "envVars": [
