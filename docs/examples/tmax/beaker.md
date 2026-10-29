@@ -80,7 +80,7 @@ Before submitting:
 | `gpus` | required | GPUs per replica |
 | `synchronized_start_timeout` | `1h` | Multi-node: how long replicas wait for each other to start |
 | `shared_memory` | `256GiB` | `/dev/shm` |
-| `image` | `docker.io/radixark/miles:latest` | Pin a dated image instead; see [Images](#images) |
+| `image` | `docker.io/radixark/miles:latest` | A Docker image, or `beaker:<account>/<name>`; see [Images](#images) |
 | `sandbox_shards` | `1` | Podman daemons per node (`SWERL_PODMAN_SERVICE_COUNT`) |
 | `mirror_url` | unset | docker.io pull-through mirrors, comma-separated, or `auto` |
 | `keep_last_n_checkpoints` | `0` (keep all) | The pruner's retention |
@@ -121,8 +121,16 @@ Ethernet).
 
 ## Images
 
-- **Pin a dated official image per config**: `docker.io/radixark/miles:dev-YYYYMMDDHHMM`. The configs use
-  `dev-202610151741` (SGLang 0.5.22.dev46, torch 2.13 on CUDA 13.0, Megatron `9df207fd1`).
+- **The configs use our own image on Beaker**: `image: beaker:shashankg/tmax-miles-train-20261029`. Upstream's dated
+  dev images (`radixark/miles:dev-YYYYMMDDHHMM`) are deleted after 14 days, and `dev-202610151741`, which every run
+  before 2026-10-29 used, was gone that day. A Beaker image stays until someone deletes it.
+  [`../docker/build_train_image.sh`](https://github.com/radixark/miles/blob/main/examples/tmax/docker/build_train_image.sh) rebuilds that image from upstream's Dockerfile at
+  the Miles commit that built it, with its SGLang (`7b6993a`, 0.5.22.dev46), Megatron (`9df207fd1`), torch 2.13 on
+  CUDA 13.0, and the versions it had of the Python packages the Dockerfile leaves unpinned
+  ([`train_image_pins.txt`](https://github.com/radixark/miles/blob/main/examples/tmax/docker/train_image_pins.txt), from a run's W&B pip freeze); `--beaker NAME` uploads
+  it. `submit.py` takes `beaker:<account>/<name>` for a Beaker image and anything else as a Docker image.
+- **A new image is a new config.** Build it under a new name, smoke-test it, and point new configs at it; a release
+  tag (`radixark/miles:v0.1.x`) is the other base that persists.
 - **Session server v2 needs SGLang's prefill weight versions** (`--enable-prefill-weight-versions`). Images from
   2026-10-14 on have them; with an older one (e.g. `dev-202610131159`) the job dies at start with an
   `AttributeError` on `enable_prefill_weight_versions`.
@@ -338,7 +346,8 @@ What to do when a symptom shows up. Every failure mode seen so far, with its sta
 | `CheckpointException` from `save_model`, `No space left on device` | The shared `oe-adapt` volume is full; every retry fails at its first save until space returns | Free space, our old training states and debug dumps first ([Weka full](https://github.com/radixark/miles/blob/main/examples/tmax/INVESTIGATIONS.md#2026-10-29-oe-adapt-full-again-checkpoint-saves-fail)) |
 | `Failed collecting samples: ReadError('')` from `agentic_tool_call.py` | Fetching an episode from the session server failed; the whole group is dropped | 2.5-3% of episodes on the pre-rebase code; none so far on the rebased code (upstream's session-server and transport fixes) |
 | `http_utils.py … Error: , retrying... (attempt 1/60, url=…/sessions` with `starlette.requests.ClientDisconnect` on the session server | A session-create request dropped mid-body | Harmless: retried and succeeded |
-| `AttributeError` mentioning `enable_prefill_weight_versions` at start | Image older than session server v2 needs | Pin `dev-202610151741` or newer |
+| `AttributeError` mentioning `enable_prefill_weight_versions` at start | Image older than session server v2 needs | Use the TMax training image ([Images](#images)) |
+| The job never starts: the image `radixark/miles:dev-…` cannot be pulled (not found) | Upstream deleted the dated dev tag (after 14 days) | Use the TMax training image on Beaker ([Images](#images)) |
 | `NewConnectionError … Connection refused` to engine ports, `retry_until_deadline … wait_init_expected_num_cells` for the first few minutes | Engines still starting | Normal |
 | `Step 'bash' failed: 97 is not a valid stream` (or similar docker-py `ValueError`) in traces | podman 4.9's exec stream framing breaking under load | Counted as a tool error, the episode continues; podman 5.6.2 should remove it |
 | `pulling sandbox image … as anonymous`, HTTP 429 from Docker Hub | No pull credentials | Check `dockerhub_username` and the `DOCKER_PAT` secret |
