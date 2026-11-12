@@ -1,22 +1,27 @@
-"""Build the SafeComp source tasks' environment images on Beaker and push them to Docker Hub.
+"""Build the SafeComp tasks' environment images on Beaker and push them to Docker Hub.
 
-    python examples/tmax/safety/build_env_images.py plan   --out-dir DIR [--folders train_clean ...] [--sources-file F]
+    python examples/tmax/safety/build_env_images.py plan   --out-dir DIR [--folders ...] [--sources-file F]
+    python examples/tmax/safety/build_env_images.py plan   --out-dir DIR2 --variant risk --base-builds DIR [...]
     python examples/tmax/safety/build_env_images.py submit --out-dir DIR --shards 12
     python examples/tmax/safety/build_env_images.py run    --out-dir DIR --shard I --shards N       # inside the job
 
 SafeComp's tasks (mingqianz's share, ``share_submission_v1_1``) are Harbor tasks: a Dockerfile per task, built at run
-time. TMax sandboxes start from a prebuilt image instead. Every risk task's Dockerfile is its source task's control
-Dockerfile plus an appended block that only copies files and runs ``safety_post.sh`` (checked over all 1,713
-``train_clean`` risk tasks), so only the control environments are built here; ``make_dataset.py`` turns the appended
-block into a setup the sandbox replays when the container starts.
+time. TMax sandboxes start from a prebuilt image with the whole environment baked in, so every task gets one here.
+Every risk task's Dockerfile is its source task's control Dockerfile plus an appended block that only copies files
+and runs ``safety_post.sh`` (checked over all 1,713 ``train_clean`` risk tasks). The images are built in two phases:
 
-``plan`` lists the control environments of the chosen folders (or of the sources in ``--sources-file``), tags each by a
-hash of its files, so a source shared by several folders is built once and the tag says nothing about the task, and
-writes ``plan.jsonl``. ``submit`` starts one Beaker experiment with one CPU task per shard. Sources sharing a
-Dockerfile header (the 3.6 GB ``base_install.sh`` layer) land in as few shards as possible, so that layer is built and
-pushed a few times rather than once per shard. ``run`` builds a shard with ``podman build`` on the unmodified task
-directory, pushes it, removes it locally, and appends one JSON line per source to ``shard-<i>.jsonl``; a tag already in
-the registry is skipped, so a rerun only retries what failed.
+* ``--variant control``: each source's control directory, built unmodified;
+* ``--variant risk``: each risk task's appended block on top of its source's pushed control image, pinned by digest
+  (``--base-builds``: the control build directories), from the risk task's own build context. That is the image the
+  risk Dockerfile builds, with the control layers shared instead of rebuilt; a risk image adds kilobytes.
+
+``plan`` lists the environments of the chosen folders (or of the sources in ``--sources-file``), tags each by a hash
+of what it is built from, so a source shared by several folders is built once and the tag says nothing about the task,
+and writes ``plan.jsonl``. ``submit`` starts one Beaker experiment with one CPU task per shard. Controls sharing a
+Dockerfile header (the 3.6 GB ``base_install.sh`` layer), and risk tasks sharing a control, land in as few shards as
+possible, so a shared layer is built or pulled a few times rather than once per shard. ``run`` builds a shard with
+``podman build``, pushes it, removes it locally, and appends one JSON line per image to ``shard-<i>.jsonl``; a tag
+already in the registry is skipped, so a rerun only retries what failed.
 """
 
 import argparse
@@ -64,46 +69,82 @@ def _dockerfile_header(env_dir: Path) -> str:
     return hashlib.sha1(dockerfile.split("COPY post_install.sh")[0].encode()).hexdigest()[:8]
 
 
+def appended_block(risk_dockerfile: str, control_dockerfile: str) -> list[str]:
+    """The instruction lines a risk Dockerfile adds after its control's: COPY and RUN only."""
+    base = control_dockerfile.rstrip("\n")
+    assert risk_dockerfile.startswith(base), "the risk Dockerfile does not extend its control's"
+    lines = [line.strip() for line in risk_dockerfile[len(base) :].splitlines()]
+    block = [line for line in lines if line and not line.startswith("#")]
+    unsupported = [line for line in block if line.split(" ", 1)[0] not in ("COPY", "RUN")]
+    assert not unsupported, f"unexpected instructions in a risk block: {unsupported}"
+    return block
+
+
+def _built(build_dirs: list[str]) -> dict[str, dict]:
+    """task -> its plan entry plus build result, for every pushed (or already present) image in these build
+    directories (results joined to plan.jsonl by tag)."""
+    built = {}
+    for build_dir in build_dirs:
+        plan = {e["tag"]: e for e in map(json.loads, open(Path(build_dir) / "plan.jsonl"))}
+        for shard in sorted(Path(build_dir).glob("shard-*.jsonl")):
+            for line in open(shard):
+                record = json.loads(line)
+                if record["status"] in ("pushed", "exists"):
+                    entry = {**plan[record["tag"]], **record}
+                    built[entry.get("task", entry["source"])] = entry
+    return built
+
+
 def _plan(args: argparse.Namespace) -> None:
     rows = [json.loads(line) for line in open(f"{args.share_dir}/manifest.jsonl")]
-    controls = [r for r in rows if r["variant"] == "control" and r["folder"] in args.folders]
+    rows = [r for r in rows if r["variant"] == args.variant and r["folder"] in args.folders]
     if args.sources_file:
         wanted = {line.strip() for line in open(args.sources_file) if line.strip()}
-        controls = [r for r in controls if r["task_id"] in wanted]
-        missing = wanted - {r["task_id"] for r in controls}
-        assert not missing, f"no control in {args.folders} for {sorted(missing)}"
+        rows = [r for r in rows if r["task_id"] in wanted]
+        missing = wanted - {r["task_id"] for r in rows}
+        assert not missing, f"no {args.variant} task in {args.folders} for {sorted(missing)}"
+    bases = _built(args.base_builds) if args.variant == "risk" else {}
 
     def one(row: dict) -> dict:
         env_dir = Path(row["target"]) / "environment"
-        return {
-            "source": row["task_id"],
-            "env_dir": str(env_dir),
-            "header": _dockerfile_header(env_dir),
-            "tag": env_tag(env_dir),
-        }
+        entry = {"task": row["name"], "source": row["task_id"], "env_dir": str(env_dir)}
+        if args.variant == "control":
+            # The task key is the source: a control is the source's environment whatever folder links it.
+            return {**entry, "task": row["task_id"], "group": _dockerfile_header(env_dir), "tag": env_tag(env_dir)}
+        base = bases.get(row["task_id"])
+        assert base, f"{row['name']}: no pushed control image for {row['task_id']} in {args.base_builds}"
+        control_dir = Path(base["env_dir"])
+        block = appended_block((env_dir / "Dockerfile").read_text(), (control_dir / "Dockerfile").read_text())
+        repository = base["image"].rsplit(":", 1)[0]
+        dockerfile = "\n".join([f"FROM {repository}@{base['digest']}", *block]) + "\n"
+        tag = hashlib.sha256((dockerfile + env_tag(env_dir)).encode()).hexdigest()[:16]
+        return {**entry, "group": row["task_id"], "tag": tag, "dockerfile": dockerfile}
 
     with ThreadPoolExecutor(32) as pool:
-        entries = list(pool.map(one, controls))
+        entries = list(pool.map(one, rows))
+    # A task linked from several folders must have one image, or the dataset could not name one for it.
+    tags_per_task: dict[str, set] = {}
+    for entry in entries:
+        tags_per_task.setdefault(entry["task"], set()).add(entry["tag"])
+    conflicts = {t: tags for t, tags in tags_per_task.items() if len(tags) > 1}
+    assert not conflicts, f"tasks with differing environments across folders: {conflicts}"
     by_tag: dict[str, dict] = {}
     for entry in entries:
         by_tag.setdefault(entry["tag"], entry)
-    # A source in several folders must have one environment, or the dataset could not name one image for it.
-    tags_per_source: dict[str, set] = {}
-    for entry in entries:
-        tags_per_source.setdefault(entry["source"], set()).add(entry["tag"])
-    conflicts = {s: t for s, t in tags_per_source.items() if len(t) > 1}
-    assert not conflicts, f"sources with differing environments across folders: {conflicts}"
-    plan = sorted(by_tag.values(), key=lambda e: (e["header"], e["source"]))
+    plan = sorted(by_tag.values(), key=lambda e: (e["group"], e["task"]))
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "plan.jsonl", "w") as f:
         for entry in plan:
             f.write(json.dumps({**entry, "image": f"{args.repo}:{entry['tag']}"}) + "\n")
-    print(f"{len(plan)} images from {len(controls)} control links ({sorted(set(args.folders))}) -> {out}/plan.jsonl")
+    print(
+        f"{len(plan)} {args.variant} images from {len(rows)} links ({sorted(set(args.folders))}) -> {out}/plan.jsonl"
+    )
 
 
 def _shard(plan: list[dict], shard: int, shards: int) -> list[dict]:
-    """Contiguous slices of the header-sorted plan: each header group spans as few shards as possible."""
+    """Contiguous slices of the group-sorted plan: each group (a Dockerfile header, or a risk task's control) spans as
+    few shards as possible."""
     size = -(-len(plan) // shards)
     return plan[shard * size : (shard + 1) * size]
 
@@ -182,17 +223,18 @@ def _registry_token(repository: str) -> str:
         return json.load(response)["token"]
 
 
-def _pushed(image: str, token: str) -> bool:
+def _pushed_digest(image: str, token: str) -> str | None:
+    """The manifest digest of ``image`` in the registry, or None when it is not there."""
     repository, tag = image.removeprefix("docker.io/").rsplit(":", 1)
     request = urllib.request.Request(f"https://registry-1.docker.io/v2/{repository}/manifests/{tag}", method="HEAD")
     request.add_header("Authorization", f"Bearer {token}")
     request.add_header("Accept", _MANIFEST_ACCEPT)
     try:
-        with urllib.request.urlopen(request, timeout=30):
-            return True
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.headers["Docker-Content-Digest"]
     except urllib.error.HTTPError as e:
         if e.code in (401, 404):  # 401: the repository does not exist yet
-            return False
+            return None
         raise
 
 
@@ -208,23 +250,31 @@ def _run(args: argparse.Namespace) -> None:
 
     def one(entry: dict) -> dict:
         t0 = time.monotonic()
-        record = {k: entry[k] for k in ("source", "tag", "image")}
+        record = {k: entry[k] for k in ("task", "source", "env_dir", "tag", "image")}
         try:
-            if _pushed(entry["image"], _registry_token(repository)):
-                return {**record, "status": "exists", "seconds": 0.0}
+            digest = _pushed_digest(entry["image"], _registry_token(repository))
+            if digest:
+                return {**record, "status": "exists", "digest": digest, "seconds": 0.0}
         except Exception as e:  # an unreadable registry only costs a rebuild
-            print(f"{entry['source']}: registry check failed ({e!r}); building", flush=True)
-        log_path = logs / f"{entry['source']}.log"
+            print(f"{entry['task']}: registry check failed ({e!r}); building", flush=True)
+        log_path = logs / f"{entry['task']}.log"
         error = ""
         for attempt in range(_BUILD_ATTEMPTS):
             with open(log_path, "a") as log:
                 log.write(f"=== attempt {attempt + 1} {time.strftime('%Y-%m-%dT%H:%M:%S')}\n")
                 log.flush()
-                build = subprocess.run(
-                    ["podman", "build", "--network", "host", "-t", entry["image"], entry["env_dir"]],
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                )
+                with tempfile.NamedTemporaryFile("w", suffix=".Dockerfile") as dockerfile:
+                    # A risk image: its appended block on the control image (plan's generated Dockerfile).
+                    file_args = []
+                    if "dockerfile" in entry:
+                        dockerfile.write(entry["dockerfile"])
+                        dockerfile.flush()
+                        file_args = ["-f", dockerfile.name]
+                    build = subprocess.run(
+                        ["podman", "build", "--network", "host", *file_args, "-t", entry["image"], entry["env_dir"]],
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                    )
                 if build.returncode == 0:
                     with tempfile.NamedTemporaryFile("r") as digest_file:
                         push = subprocess.run(
@@ -271,6 +321,8 @@ def main() -> None:
     parser.add_argument("--share-dir", default=SHARE_DIR)
     parser.add_argument("--folders", nargs="+", default=["train_clean", "id_test", "request_only_ood", "security_ood"])
     parser.add_argument("--sources-file", help="plan only these source task ids (one per line)")
+    parser.add_argument("--variant", choices=["control", "risk"], default="control")
+    parser.add_argument("--base-builds", nargs="+", default=[], help="risk: the control build directories")
     parser.add_argument("--repo", default=REPO)
     parser.add_argument("--shards", type=int, default=12)
     parser.add_argument("--shard", type=int)
