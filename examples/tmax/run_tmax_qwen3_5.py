@@ -55,9 +55,13 @@ Args:
   --async-data-buffer-capacity-factor: fully-async only; finished groups buffered ahead of training, in batches
       (default: 2). open-instruct's --async_steps 4 lets generation run 4 steps ahead.
   --optimizer-cpu-offload: keep Adam state in host RAM (default: on; turn off on 80GB+ GPUs).
+  --dataset: the tasks, a Hugging Face repo in allenai/tmax-15k-open-instruct's layout or the absolute path of such a
+      directory already extracted, e.g. SafeComp's from safety/make_dataset.py (default: allenai/tmax-15k-open-instruct).
   --num-prompts: keep only the first N prompts, for smoke tests (default: all).
   --start-failure: zero | drop, for a sandbox that never starts (default: zero, open-instruct's behavior).
   --episode-timeout-s: wall-clock cap per episode, 0 for none (default: 0).
+  --verify-unsubmitted: SafeComp tasks: test an episode that ends without submitting and score it -violation
+      (default: off).
   --tool-call-timeout-s: cap on one step, tests included (default: 120, open-instruct's tool_call_timeout).
   --sandbox-start-concurrency / --sandbox-exec-concurrency: per node (default: 16 / 128).
   --sandboxes-per-node: live sandboxes per node, 0 for no cap (default: 0). open-instruct's --pool_size actors
@@ -128,7 +132,6 @@ from miles.utils.typer_utils import SCRIPT_ENV_VAR_PREFIX
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _OPD_TEACHER_PORT = 30100  # the first SGLang teacher on a node (--opd-teacher-mode sglang); the next ones count up
-_DATASET = "allenai/tmax-15k-open-instruct"
 
 _MODEL_NAMES = Literal[
     "Qwen3.5-9B",
@@ -215,6 +218,10 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     async_max_concurrent_samples: int = 0  # 0 keeps Miles' default of one training batch
     async_data_buffer_capacity_factor: float = 2.0
     sglang_mem_fraction_static: float = 0.7
+    # The tasks: a Hugging Face dataset repo laid out as allenai/tmax-15k-open-instruct (data/*.parquet with messages
+    # and env_config, plus task-data.tar.gz), or the absolute path of such a directory already extracted, as
+    # safety/make_dataset.py writes for SafeComp's tasks.
+    dataset: str = "allenai/tmax-15k-open-instruct"
     num_prompts: int = 0
     max_steps: int = 64
     # podman: containers on podman daemons this job runs; gateway: on a LiteRegistry podman fleet (tmax_gateway.py).
@@ -231,6 +238,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     # SWERL_RESET_FAILURE_ZERO_REWARD=1); drop: its group is dropped.
     start_failure: Literal["zero", "drop"] = "zero"
     episode_timeout_s: int = 0
+    # SafeComp safety tasks: test an episode that ends without submitting and score it -violation, so a harm is
+    # penalized whether or not the policy submits (TMax tasks score an unsubmitted episode 0 untested either way).
+    verify_unsubmitted: bool = False
     # open-instruct's tool_call_timeout: caps a whole step, a submit's test run included.
     tool_call_timeout_s: int = 120
     # Per-episode JSONL traces go to <trace_dir>/<exp_name or run_id> (open-instruct's --save_traces).
@@ -358,7 +368,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 
     @property
     def dataset_dir(self) -> str:
-        return f"{self.data_dir}/{_DATASET.split('/')[1]}"
+        if self.dataset.startswith("/"):
+            return self.dataset
+        return f"{self.data_dir}/{self.dataset.split('/')[1]}"
 
     @property
     def task_data_dir(self) -> str:
@@ -374,7 +386,10 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 @command_utils.dataclass_cli
 def prepare(args: ScriptArgs):
     U = args.create_backend()
-    U.hf_download_dataset(_DATASET, data_dir=args.data_dir)
+    if args.dataset.startswith("/"):  # a local dataset directory, extracted already
+        assert Path(args.task_data_dir).is_dir(), f"{args.dataset} has no task-data.tar.gz.extracted"
+    else:
+        U.hf_download_dataset(args.dataset, data_dir=args.data_dir)
     if not Path(args.task_data_dir).exists():
         U.exec_command_cpu(
             f"mkdir -p {args.task_data_dir}.tmp && "
@@ -617,6 +632,7 @@ def execute(args: ScriptArgs):
             "TMAX_SANDBOXES_PER_NODE": str(args.sandboxes_per_node),
             "TMAX_START_FAILURE": args.start_failure,
             "TMAX_EPISODE_TIMEOUT_S": str(args.episode_timeout_s),
+            "TMAX_VERIFY_UNSUBMITTED": str(int(args.verify_unsubmitted)),
             "TMAX_TOOL_CALL_TIMEOUT_S": str(args.tool_call_timeout_s),
             "TMAX_TRACE_DIR": args.trace_run_dir,
             # read by generate.generate_with_teacher, in the rollout process
