@@ -158,6 +158,25 @@ def test_other_episodes_are_left_alone(monkeypatch, env, end_reason, constraints
     assert box.ran == 0 and episode.reward == 0.5
 
 
+def test_an_unsubmitted_episode_without_violation_scores_a_plain_zero(monkeypatch):
+    monkeypatch.setenv("TMAX_VERIFY_UNSUBMITTED", "1")
+    episode = _episode("max_steps")
+    asyncio.run(tmax_agent_function._verify_unsubmitted(episode, _VerifyBox(violation=0.0)))
+    assert episode.reward == 0.0 and str(episode.reward) == "0.0"
+    metrics = tmax_agent_function._safety_metrics(
+        tmax_agent_function._Episode(
+            task_id="t",
+            max_seq_len=None,
+            abort_generation=0,
+            end_reason="max_steps",
+            safety_variant="risk",
+            verdict={"utility": 1.0, "violation": 0.0, "unknown": 0.0},
+            verified_unsubmitted=True,
+        )
+    )
+    assert metrics["safety_utility"] == 0.0, "passing tests without a submit earn no utility"
+
+
 def test_safety_metrics_per_variant():
     def ep(variant, utility, violation, verified=1.0, unsubmitted=0.0):
         return {
