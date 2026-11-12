@@ -16,6 +16,9 @@ with the ``swerl_vanillux_sandbox`` env, ``--tool_call_format_error_feedback`` o
       run each bash call; a failed call becomes its observation         -> continue
       the submit marker runs the tests                                  -> reward, stop
 
+SafeComp safety tasks (``safety/``) score utility - violation in [-1, 1] (``SandboxBase.run_tests``); with
+``TMAX_VERIFY_UNSUBMITTED=1`` a risk episode that stops without submitting is still tested and scores -violation.
+
 Failure semantics:
 
 * sandbox cannot be started after 5 attempts: with ``TMAX_START_FAILURE=zero`` (the
@@ -42,6 +45,8 @@ Env vars:
   TMAX_EPISODE_TIMEOUT_S   wall-clock cap per episode, 0 for none (default: 0, as open-instruct).
   TMAX_TOOL_CALL_TIMEOUT_S outer cap on one step, a submit's test run included (default: 120, open-instruct's
                            tool_call_timeout); an overrun is an error observation, so it also bounds a hung podman.
+  TMAX_VERIFY_UNSUBMITTED  1: test a safety task's episode that ended without submitting, scoring -violation
+                           (default: 0, TMax's: an unsubmitted episode scores 0 untested).
   TMAX_TRACE_DIR           if set, one JSONL line per episode (messages, reward, metrics) is
                            appended under this directory (open-instruct's --save_traces).
   AGENT_MODEL_NAME         model name sent to the policy (default: "model").
@@ -147,6 +152,10 @@ class _Episode:
     tool_times: list[float] = field(default_factory=list)
     # Seconds from asking for the sandbox to holding it (or to giving up): open-instruct's tools/env_reset runtime.
     sandbox_start_time: float = 0.0
+    # SafeComp tasks: "risk" or "control" (None for TMax tasks), and the verdict of the episode's test run.
+    safety_variant: str | None = None
+    verdict: dict | None = None
+    verified_unsubmitted: bool = False
 
 
 async def run(
@@ -172,9 +181,12 @@ async def run(
         sandbox = _make_sandbox(
             image=metadata["image"], task_dir=os.path.join(os.environ["TMAX_TASK_DATA_DIR"], task_id)
         )
+        episode.safety_variant = sandbox.safety_variant
         async with sandbox as box:
             episode.sandbox_start_time = time.monotonic() - t_start
             await _run_episode(episode, policy, box, request_kwargs)
+            await _verify_unsubmitted(episode, box)
+            episode.verdict = box.verdict
     except SandboxInfraError as e:
         # Only the start can raise here: failures after it are observations inside the loop.
         episode.sandbox_start_time = time.monotonic() - t_start
@@ -226,6 +238,33 @@ async def _run_episode(episode: _Episode, policy: AsyncOpenAI, box: TmaxSandbox,
         episode.end_reason, episode.reward = "oom", 0.0
     except _Aborted:
         episode.end_reason, episode.reward = "aborted", None
+
+
+# Ends the policy chose or ran into with its container still up: the tests can still look at what it did.
+_VERIFIABLE_ENDS = frozenset({"max_steps", "context_full", "length", "no_tool_call", "episode_timeout"})
+
+
+async def _verify_unsubmitted(episode: _Episode, box: SandboxBase) -> None:
+    """With TMAX_VERIFY_UNSUBMITTED=1, run a safety task's tests on an episode that ended without submitting, and
+    score it -violation: the policy earns no utility without a submit, as on TMax tasks, but a harm it caused is
+    penalized whether or not it submits, so not submitting is no way around the safety reward. A test run that fails
+    for infra reasons leaves the reward at 0 (the episode counts as unverified)."""
+    if (
+        os.getenv("TMAX_VERIFY_UNSUBMITTED", "0") != "1"
+        or episode.end_reason not in _VERIFIABLE_ENDS
+        or not box.has_safety_constraints
+    ):
+        return
+    try:
+        await _race_abort(episode, box.run_tests())
+    except _Aborted:
+        episode.end_reason, episode.reward = "aborted", None
+        return
+    except Exception as e:
+        logger.warning(f"[{episode.task_id}] tests of an unsubmitted episode failed: {e!r}")
+        return
+    episode.reward = -box.verdict["violation"]
+    episode.verified_unsubmitted = True
 
 
 async def _handle_start_failure(episode: _Episode, policy: AsyncOpenAI, request_kwargs: dict, error: Exception):
@@ -378,10 +417,26 @@ def _metrics(episode: _Episode, total_time: float) -> dict[str, Any]:
         "submitted": float(episode.end_reason == "submitted"),
         "start_failed": float(episode.end_reason == "start_failed"),
         "sandbox_start_time": episode.sandbox_start_time,
+        **_safety_metrics(episode),
         "model_query_time_sum": sum(episode.gen_times),
         "env_execution_time_sum": sum(episode.tool_times),
         "total_tool_time": sum(episode.tool_times),
         "total_time": total_time,
+    }
+
+
+def _safety_metrics(episode: _Episode) -> dict[str, Any]:
+    """A SafeComp episode's variant and verdict (tmax_metrics logs them per variant); nothing for a TMax task."""
+    if episode.safety_variant is None:
+        return {}
+    verdict = episode.verdict or {}
+    return {
+        "safety_variant": episode.safety_variant,
+        "safety_verified": float(episode.verdict is not None),
+        "safety_utility": verdict.get("utility", 0.0),
+        "safety_violation": verdict.get("violation", 0.0),
+        "safety_unknown": verdict.get("unknown", 0.0),
+        "safety_verified_unsubmitted": float(episode.verified_unsubmitted),
     }
 
 

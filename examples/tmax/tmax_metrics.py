@@ -13,6 +13,8 @@ Every key is under ``rollout/``, which W&B plots against ``rollout/step``:
 * ``rollout/agent/*``: end reasons, turns, tool calls, model and environment time, over every finished episode
   (filtered groups included); ``non_submitting_fraction`` is open-instruct's ``val/non_submitting_completion_fraction``;
 * ``rollout/tools/{bash,env_reset}/*``: open-instruct's ``tools/*`` (calls per episode, runtime, failure rate);
+* ``rollout/safety/{risk,control}/*``: SafeComp episodes' utility, safe completion (utility without violation),
+  violation, undecided checks and tested share, per variant, over every finished episode (``safety/``);
 * ``rollout/unfiltered/*``: the groups' solve rates before the filter, open-instruct's ``batch/percent_solved_*``;
 * ``rollout/trained/*``: response lengths of solved and unsolved trained samples (``val/sequence_lengths_*``),
   advantages (``val/advantages_*``) and samples trained so far (``episode``).
@@ -63,7 +65,12 @@ def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_t
     solve_rates, episodes = _drain()
     if not episodes:  # the filter hooks are not installed: describe the trained episodes instead
         episodes = [s.metadata["agent_metrics"] for s in samples if (s.metadata or {}).get("agent_metrics")]
-    metrics = _agent_metrics(episodes) | _unfiltered_metrics(solve_rates) | _trained_metrics(args, rollout_id, samples)
+    metrics = (
+        _agent_metrics(episodes)
+        | _safety_metrics(episodes)
+        | _unfiltered_metrics(solve_rates)
+        | _trained_metrics(args, rollout_id, samples)
+    )
     if metrics:
         metrics["rollout/step"] = compute_rollout_step(args, rollout_id)
         tracking.log(args, metrics, step_key="rollout/step")
@@ -119,6 +126,28 @@ def _agent_metrics(episodes: list[dict]) -> dict[str, float]:
     if starts:
         metrics["rollout/tools/env_reset/avg_runtime"] = mean(e["sandbox_start_time"] for e in starts)
         metrics["rollout/tools/env_reset/failure_rate"] = mean(e.get("start_failed", 0.0) for e in starts)
+    return metrics
+
+
+def _safety_metrics(episodes: list[dict]) -> dict[str, float]:
+    """SafeComp episodes per variant (risk / control): rates over all its episodes, an untested one (no submit, or a
+    failed start) counting as no utility and no violation; ``verified`` is the share that was tested."""
+    metrics = {}
+    for variant in ("risk", "control"):
+        chosen = [e for e in episodes if e.get("safety_variant") == variant]
+        if not chosen:
+            continue
+        prefix = f"rollout/safety/{variant}"
+        metrics[f"{prefix}/episodes"] = len(chosen)
+        metrics[f"{prefix}/verified"] = mean(e["safety_verified"] for e in chosen)
+        metrics[f"{prefix}/utility"] = mean(e["safety_utility"] for e in chosen)
+        metrics[f"{prefix}/safe_completion"] = mean(
+            float(e["safety_utility"] == 1 and e["safety_violation"] == 0) for e in chosen
+        )
+        if variant == "risk":
+            metrics[f"{prefix}/violation"] = mean(e["safety_violation"] for e in chosen)
+            metrics[f"{prefix}/unknown"] = mean(e["safety_unknown"] for e in chosen)
+            metrics[f"{prefix}/verified_unsubmitted"] = mean(e["safety_verified_unsubmitted"] for e in chosen)
     return metrics
 
 
