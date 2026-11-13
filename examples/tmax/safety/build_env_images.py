@@ -81,17 +81,21 @@ def appended_block(risk_dockerfile: str, control_dockerfile: str) -> list[str]:
 
 
 def _built(build_dirs: list[str]) -> dict[str, dict]:
-    """task -> its plan entry plus build result, for every pushed (or already present) image in these build
-    directories (results joined to plan.jsonl by tag)."""
+    """task -> its entry plus build result, for every task whose image is pushed (or already present) in these build
+    directories. Results are joined by tag to tasks.jsonl, which names every task, including those sharing another
+    task's image (plan.jsonl, which lists each image once, in build directories planned before tasks.jsonl)."""
     built = {}
     for build_dir in build_dirs:
-        plan = {e["tag"]: e for e in map(json.loads, open(Path(build_dir) / "plan.jsonl"))}
+        results = {}
         for shard in sorted(Path(build_dir).glob("shard-*.jsonl")):
             for line in open(shard):
                 record = json.loads(line)
                 if record["status"] in ("pushed", "exists"):
-                    entry = {**plan[record["tag"]], **record}
-                    built[entry.get("task", entry["source"])] = entry
+                    results[record["tag"]] = record
+        index = Path(build_dir) / "tasks.jsonl"
+        for entry in map(json.loads, open(index if index.exists() else Path(build_dir) / "plan.jsonl")):
+            if entry["tag"] in results:
+                built[entry.get("task", entry["source"])] = {**results[entry["tag"]], **entry}
     return built
 
 
@@ -137,8 +141,15 @@ def _plan(args: argparse.Namespace) -> None:
     with open(out / "plan.jsonl", "w") as f:
         for entry in plan:
             f.write(json.dumps({**entry, "image": f"{args.repo}:{entry['tag']}"}) + "\n")
+    # Every task's image, including tasks whose environment is byte-identical to another's and so share its image.
+    by_task = {e["task"]: e for e in entries}
+    with open(out / "tasks.jsonl", "w") as f:
+        for task in sorted(by_task):
+            entry = {k: v for k, v in by_task[task].items() if k != "dockerfile"}
+            f.write(json.dumps({**entry, "image": f"{args.repo}:{entry['tag']}"}) + "\n")
     print(
-        f"{len(plan)} {args.variant} images from {len(rows)} links ({sorted(set(args.folders))}) -> {out}/plan.jsonl"
+        f"{len(plan)} {args.variant} images for {len(by_task)} tasks from {len(rows)} links "
+        f"({sorted(set(args.folders))}) -> {out}/plan.jsonl, {out}/tasks.jsonl"
     )
 
 

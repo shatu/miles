@@ -26,6 +26,7 @@ import json
 import shutil
 from pathlib import Path
 
+import build_env_images
 import pandas as pd
 
 SHARE_DIR = "/weka/oe-adapt-default/mingqianz/datasets/safecomp-test/final_run/share_submission_v1_1"
@@ -57,16 +58,7 @@ def markers(env_dir: Path) -> list[str]:
 
 def _images(build_dirs: list[str]) -> dict[str, str]:
     """task (a control's source id, or a risk task's name) -> image, for every pushed (or present) build."""
-    images = {}
-    for build_dir in build_dirs:
-        plan = {e["tag"]: e for e in map(json.loads, open(Path(build_dir) / "plan.jsonl"))}
-        for shard in sorted(Path(build_dir).glob("shard-*.jsonl")):
-            for line in open(shard):
-                record = json.loads(line)
-                if record["status"] in ("pushed", "exists"):
-                    entry = {**plan[record["tag"]], **record}
-                    images[entry.get("task", entry["source"])] = entry["image"]
-    return images
+    return {task: entry["image"] for task, entry in build_env_images._built(build_dirs).items()}
 
 
 def main() -> None:

@@ -207,6 +207,26 @@ def test_the_appended_block_is_copy_and_run_only():
         build_env_images.appended_block("FROM other\n", control)
 
 
+def test_tasks_sharing_an_image_each_map_to_it(tmp_path):
+    entries = [
+        {"task": "a", "source": "a", "env_dir": "/a", "group": "g", "tag": "t1"},
+        {"task": "b", "source": "b", "env_dir": "/b", "group": "g", "tag": "t1"},
+        {"task": "c", "source": "c", "env_dir": "/c", "group": "g", "tag": "t2"},
+    ]
+    (tmp_path / "plan.jsonl").write_text(json.dumps({**entries[0], "image": "r:t1"}) + "\n")
+    (tmp_path / "tasks.jsonl").write_text("".join(json.dumps({**e, "image": f"r:{e['tag']}"}) + "\n" for e in entries))
+    (tmp_path / "shard-000.jsonl").write_text(
+        json.dumps({"source": "a", "tag": "t1", "image": "r:t1", "status": "pushed", "digest": "sha256:1"})
+        + "\n"
+        + json.dumps({"source": "c", "tag": "t2", "image": "r:t2", "status": "failed"})
+        + "\n"
+    )
+    built = build_env_images._built([str(tmp_path)])
+    assert sorted(built) == ["a", "b"], "c failed; b shares a's image"
+    assert built["b"]["env_dir"] == "/b" and built["b"]["digest"] == "sha256:1"
+    assert make_dataset._images([str(tmp_path)]) == {"a": "r:t1", "b": "r:t1"}
+
+
 def test_only_markers_the_build_scripts_name_are_withheld(tmp_path):
     (tmp_path / "safety_post.sh").write_text("mkdir -p /opt/safecomp\n")
     assert make_dataset.markers(tmp_path) == ["/opt/safecomp"]
