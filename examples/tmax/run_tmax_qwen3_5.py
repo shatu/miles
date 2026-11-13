@@ -155,7 +155,15 @@ class _Recipe:
     # enable_thinking=false. Set to each checkpoint's own template default: on from 4B up, off for the 2B checkpoints
     # (allenai/tmax-2b and hamishivi/Qwen3.5-2B ship stock Qwen3.5-2B's template, which closes an empty think block).
     enable_thinking: bool
+    # The checkpoint holds the language model only, with no vision tower and no image/video processor configs (the
+    # allenai/tmax-* releases). SGLang still loads a processor for Qwen3.5, so prepare adds Qwen3.5's (the same file at
+    # every size) to the model dir, and the rollout engines run --language-only: Megatron trains, and syncs, the
+    # language model alone.
+    language_only: bool = False
 
+
+# The Qwen3.5 image and video processor configs, byte-identical across 2B / 4B / 9B / 35B-A3B.
+_QWEN35_PROCESSOR = ("hamishivi/Qwen3.5-4B", ["preprocessor_config.json", "video_preprocessor_config.json"])
 
 _RECIPES: dict[str, _Recipe] = {
     "Qwen3.5-9B": _Recipe("Qwen/Qwen3.5-9B", "qwen3.5-9B", enable_thinking=True),
@@ -164,10 +172,10 @@ _RECIPES: dict[str, _Recipe] = {
     "Qwen3.5-4B-tmax-template": _Recipe("hamishivi/Qwen3.5-4B", "qwen3.5-4B", enable_thinking=True),
     # allenai/tmax-2b's base
     "Qwen3.5-2B-tmax-template": _Recipe("hamishivi/Qwen3.5-2B", "qwen3.5-2B", enable_thinking=False),
-    "tmax-2b": _Recipe("allenai/tmax-2b", "qwen3.5-2B", enable_thinking=False),
-    "tmax-4b": _Recipe("allenai/tmax-4b", "qwen3.5-4B", enable_thinking=True),
-    "tmax-9b": _Recipe("allenai/tmax-9b", "qwen3.5-9B", enable_thinking=True),
-    "tmax-27b": _Recipe("allenai/tmax-27b", "qwen3.5-27B", enable_thinking=True),
+    "tmax-2b": _Recipe("allenai/tmax-2b", "qwen3.5-2B", enable_thinking=False, language_only=True),
+    "tmax-4b": _Recipe("allenai/tmax-4b", "qwen3.5-4B", enable_thinking=True, language_only=True),
+    "tmax-9b": _Recipe("allenai/tmax-9b", "qwen3.5-9B", enable_thinking=True, language_only=True),
+    "tmax-27b": _Recipe("allenai/tmax-27b", "qwen3.5-27B", enable_thinking=True, language_only=True),
     # The 9B pure-OPD run's step-80 HF snapshot (tmax-9b into hamishivi/Qwen3.5-9B; tmax_prod4node_gateway_opd_9b,
     # TBlite 0.58, TB2.1 0.28 greedy): hamishivi/Qwen3.5-9B's tokenizer and template, language-model weights only.
     "tmax-opd-9b-step80": _Recipe(
@@ -400,6 +408,9 @@ def prepare(args: ScriptArgs):
     for name in filter(None, [args.model_name, args.opd_teacher]):
         recipe = _RECIPES[name]
         U.exec_command_cpu(_fetch_command(recipe.hf_repo, f"{args.model_dir}/{name}"))
+        if recipe.language_only:
+            repo, files = _QWEN35_PROCESSOR
+            U.exec_command_cpu(f"hf download {repo} {' '.join(files)} --local-dir {args.model_dir}/{name}")
         if name == args.opd_teacher and args.opd_mode == "sglang":
             continue  # SGLang serves the HF checkpoint
         U.convert_checkpoint(
@@ -560,6 +571,7 @@ def execute(args: ScriptArgs):
         f"--sglang-mem-fraction-static {args.sglang_mem_fraction_static} "
         "--sglang-reasoning-parser qwen3 "
         "--sglang-tool-call-parser qwen3_coder "
+        + ("--sglang-language-only " if _RECIPES[args.model_name].language_only else "")
     )
 
     misc_args = (
