@@ -1,0 +1,61 @@
+# Experiment 1: SafeComp safety RL from hamishivi/Qwen3.5-4B on shatu/safecomp-tmax (train split: her
+# train_clean_excl_val, 1,539 risk + 793 control tasks from 793 sources). prod_2node_gateway_4b.yaml's recipe and layout
+# (8 prompts x 32 samples, DPPO, lr 1e-6, staleness 4, zero-variance filter; 1 training node, 1 node of 8 SGLang
+# engines) with the reward utility - violation and unsubmitted risk episodes tested. 300 steps of 8 prompts is about
+# one pass over the 2,332 tasks before the zero-variance filter; the training image and fleet are the safety smokes'.
+#   python examples/tmax/beaker/submit.py examples/tmax/configs/prod_2node_safety_qwen35_4b_safecomp.yaml
+exp_name: tmax_prod2node_safety_qwen35_4b_safecomp
+model_name: Qwen3.5-4B-tmax-template
+dataset: shatu/safecomp-tmax
+verify_unsubmitted: true                      # an unsubmitted risk episode is tested and scores -violation
+sandbox_backend: gateway
+num_nodes: 2
+num_gpus_per_node: 8
+async_rollout_gpus: 8
+rollout_batch_size: 8
+n_samples_per_prompt: 32
+num_rollout: 300
+max_seq_len: 67584
+rollout_max_response_len: 16384
+max_steps: 64
+filter_zero_std: true
+max_weight_staleness: 4
+async_max_concurrent_samples: 512
+async_data_buffer_capacity_factor: 4
+tensor_model_parallel_size: 1
+context_parallel_size: 1
+max_tokens_per_gpu: 67584
+optimizer_cpu_offload: false
+sglang_mem_fraction_static: 0.8
+sandbox_start_concurrency: 64
+start_failure: drop
+save_interval: 5
+hf_snapshot_every: 20
+extra_args: "--log-probs-backend fused --distributed-timeout-minutes 120 --sglang-watchdog-timeout 1800"
+model_dir: /weka/nora-default/shashankg/miles_tmax_v2/models
+data_dir: /weka/nora-default/shashankg/miles_tmax_v2/datasets
+output_dir: /weka/nora-default/shashankg/miles_tmax_v2/output
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+dump_training_data: true
+wandb_project: oe-general-agents
+wandb_entity: ai2-llm
+
+beaker:
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: urgent
+  preemptible: true                           # only used without min_runtime (Beaker allows one)
+  min_runtime: 8h
+  retries: 10
+  nodes: 2
+  gpus: 8
+  shared_memory: 512GiB
+  image: beaker:shashankg/tmax-miles-train-d0831a475b
+  dockerhub_username: shashankg209
+  # The fleet the SafeComp smokes pulled the private shashankg209/tmax-s-envs images through.
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-jupiter128-20261105.sqlite3
+  gateway_min_replicas: 64
+  keep_last_n_checkpoints: 3
+  env:
+    NCCL_DEBUG: WARN
