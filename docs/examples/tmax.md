@@ -109,8 +109,9 @@ up open-instruct's podman setup on every node and runs `prepare` + `execute`. Ea
 
 Every flag of open-instruct's production script and its counterpart here is in the
 [comparison's flag-by-flag table](/deep-dive/open-instruct-comparison#flag-by-flag-the-production-recipe).
-The deliberate algorithmic difference is the loss: open-instruct trains with DPPO, which Miles does not have, so
-the port uses PPO clip (0.2 / 0.28) around the rollout log-probs.
+The loss is open-instruct's too: DPPO with the binary total-variation trust region (threshold 0.1), anchored on the
+rollout log-probs. Miles has it as `--policy-loss-type dppo_tv` (`aecf2f49db`), and the launcher uses it by default
+(`policy_loss: dppo_tv`; `ppo_clip` trains with PPO clip at 0.2 / 0.28 instead).
 
 ## Results
 
@@ -545,7 +546,6 @@ For the 2B pair (`smoke_opd_2b.yaml`, not yet run on Beaker), scoring `hamishivi
 Open differences from open-instruct and the work on them are tracked in [ROADMAP.md](https://github.com/radixark/miles/blob/main/examples/tmax/ROADMAP.md); the
 [comparison](/deep-dive/open-instruct-comparison) describes each. The largest:
 
-- No DPPO in Miles: the port trains with PPO clip.
 - The first-turn prompt is not token-identical: SGLang's tool schema adds `"strict": false` and reorders the tool
   definition's keys, about 17 tokens. Tool observations are framed differently too (two newlines, trimmed output,
   several calls in one turn share one user block).

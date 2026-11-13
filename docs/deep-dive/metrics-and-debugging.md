@@ -729,7 +729,8 @@ For readers coming from open-instruct's
 | `policy/clipfrac_avg` | `train/pg_clipfrac` | |
 | `val/tis_ratio`, `val/tis_clipfrac` | `train/tis`, `train/tis_clipfrac` | |
 | `debug/tis_mask_frac_kept` | `train/mis_tis_mask_fraction_*`, `train/mis_rs_mask_fraction_*` | Via `mis.py`; reported as the rejected fraction |
-| `debug/dppo_mask_frac_kept`, `debug/tvpo_mask_frac_kept` | Not applicable | No DPPO/TVPO loss; `train/opsm_clipfrac` is the nearest mask metric |
+| `debug/dppo_mask_frac_kept` | 1 − `train/pg_clipfrac` | With `--policy-loss-type dppo_tv`, `pg_clipfrac` is the masked fraction |
+| `debug/tvpo_mask_frac_kept` | Not applicable | No TVPO loss; `train/opsm_clipfrac` is the nearest mask metric |
 | `debug/vllm_vs_local_logprob_diff_mean` | `train/train_rollout_logprob_abs_diff` | |
 | `debug/vllm_vs_local_logprob_diff_max/std` | Not logged | The dashboard has per-sample `max_abs_lp_diff` |
 | `debug/vllm_local_reverse_kl` | `train/train_rollout_kl` | Miles' is a proper non-negative k3 estimate |
