@@ -234,6 +234,34 @@ def test_only_markers_the_build_scripts_name_are_withheld(tmp_path):
     assert make_dataset.markers(tmp_path) == []
 
 
+def _copy(root, meta, test="exit 0\n"):
+    (root / "tests").mkdir(parents=True)
+    (root / "instruction.md").write_text("do it\n")
+    (root / "tests/test.sh").write_text(test)
+    (root / "tests/safecomp_meta.json").write_text(json.dumps(meta))
+    return root
+
+
+def test_copies_of_a_task_differing_only_in_provenance_are_the_same_task(tmp_path):
+    meta = {"variant": "control", "constraints": [], "scenario_sha256": "a", "spec_bundle_sha256": "b"}
+    a = _copy(tmp_path / "a", meta)
+    assert make_dataset.same_task(a, _copy(tmp_path / "b", {**meta, "scenario_sha256": "c"}))
+    assert not make_dataset.same_task(a, _copy(tmp_path / "c", {**meta, "constraints": ["x"]}))
+    assert not make_dataset.same_task(a, _copy(tmp_path / "d", meta, test="exit 1\n"))
+
+
+def test_a_val_split_keeps_only_the_validation_sources():
+    manifest = [
+        {"folder": "train_clean", "in_val_sources": True, "name": "v"},
+        {"folder": "train_clean", "in_val_sources": False, "name": "t"},
+        {"folder": "id_test", "in_val_sources": False, "name": "x"},
+    ]
+    assert [r["name"] for r in make_dataset.select(manifest, "train_clean:val")] == ["v"]
+    assert [r["name"] for r in make_dataset.select(manifest, "train_clean")] == ["v", "t"]
+    with pytest.raises(AssertionError):
+        make_dataset.select(manifest, "train_clean:other")
+
+
 def test_a_local_dataset_directory_is_used_in_place():
     args = launcher.ScriptArgs(dataset="/data/safety-smoke", data_dir="/root/datasets")
     assert args.dataset_dir == "/data/safety-smoke"
