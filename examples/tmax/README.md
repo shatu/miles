@@ -116,27 +116,37 @@ the port uses PPO clip (0.2 / 0.28) around the rollout log-probs.
 `configs/prod_2node_gateway_4b_parallel64.yaml` on 2x 8 B300, run `tmax_prod2node_gateway_qwen35_4b_p64_20261028_064439`
 (Beaker `01M60M1X1A5M1D3HXNY123BYYG`, commit `3ec4925326`): the GRPO recipe of the 9B runs below on the 4B, with one
 training node and one rollout node, and sandboxes on the `podman-parallel64-20261027` fleet. It is the RLVR baseline
-for the cross-size OPD run. Training since 2026-10-28, about 6 minutes per step:
+for the cross-size OPD run. About 6 minutes per step. It trained 309 steps from 2026-10-28; on 2026-10-30 a node
+drained for reimaging ended it, and its image tag had been deleted upstream, so the retries could not start
+(resumable from `iter_0000309` on the rebuilt training image):
 
 | Steps | Solve rate before the filter | All-pass / all-fail groups | Entropy | Train/rollout gap | KL to base |
 |---|---|---|---|---|---|
 | 0-39 | 0.43 | 7% / 28% | 0.38 | 0.008 | 0.002 |
-| 40-79 | 0.52 | 11% / 27% | 0.34 | 0.008 | 0.009 |
-| 80-119 | 0.56 | 19% / 23% | 0.30 | 0.008 | 0.017 |
-| 120-159 | 0.63 | 28% / 20% | 0.26 | 0.008 | 0.035 |
-| 160-179 | 0.55 | 21% / 28% | 0.23 | 0.008 | 0.050 |
+| 40-79 | 0.52 | 11% / 27% | 0.34 | 0.008 | 0.008 |
+| 80-119 | 0.56 | 19% / 22% | 0.30 | 0.008 | 0.017 |
+| 120-159 | 0.63 | 28% / 20% | 0.26 | 0.008 | 0.034 |
+| 160-199 | 0.61 | 24% / 23% | 0.25 | 0.008 | 0.054 |
+| 200-239 | 0.62 | 28% / 21% | 0.24 | 0.009 | 0.076 |
+| 240-279 | 0.63 | 32% / 21% | 0.25 | 0.010 | 0.113 |
+| 280-309 | 0.65 | 34% / 20% | 0.24 | 0.010 | 0.122 |
 
-Greedy evaluations (k=5, `max-model-len` 67584, tmax repo `c98902cc`, 1 GPU):
+Greedy evaluations (k=5, `max-model-len` 67584, tmax repo `c98902cc`; TBlite on 1 GPU, TB2.1 on 2):
 
-| Model | TBlite pass@1 / pass@5 |
-|---|---|
-| RLVR, step 80 | 0.372 / 0.530 |
-| `allenai/tmax-4b` | 0.450 / 0.610 |
-| Base `hamishivi/Qwen3.5-4B` | 0.312 / 0.470 |
+| Model | TBlite pass@1 / pass@5 | TB2.1 pass@1 / pass@5 |
+|---|---|---|
+| RLVR, step 80 | 0.372 / 0.530 | – |
+| RLVR, step 120 | 0.384 / 0.580 | – |
+| RLVR, step 160 | 0.450 / 0.620 | 0.153 / 0.270 |
+| RLVR, step 240 | 0.464 / 0.650 | 0.171 / 0.258 |
+| `allenai/tmax-4b` | 0.450 / 0.610 | 0.202 / 0.303 |
+| Base `hamishivi/Qwen3.5-4B` | 0.312 / 0.470 | 0.128 / 0.214 |
 
-At step 80 it has closed under half the distance from the base model to `allenai/tmax-4b`, where the cross-size OPD
-run below matched it by step 40. Steps 120 and 160 are being evaluated. Entropy keeps falling (0.38 to 0.23), unlike
-the 9B runs'.
+It reaches `allenai/tmax-4b` on TBlite by step 160 (the cross-size OPD run below did by step 20-40) and passes it
+slightly by step 240. On TB2.1 this harness puts it below `allenai/tmax-4b`, but on the later tmax harness
+(`omni_agent` `0bcf7c54`, 2026-11-11, greedy k=5, 2 GPUs) steps 240 and 310 score 0.229 / 0.326 and 0.220 / 0.337
+against `allenai/tmax-4b`'s 0.222 / 0.326, so that gap was the harness's. Entropy fell from 0.38 to about 0.24 by
+step 160 and then held, unlike the 9B runs', whose entropy rose.
 
 ### Pure OPD across sizes, `allenai/tmax-9b` into `hamishivi/Qwen3.5-4B`, 4 nodes
 
@@ -196,13 +206,13 @@ Compared with the GRPO run from the base model at the same steps:
 | Model | TBlite pass@1 / pass@5 | TB2.1 pass@1 / pass@5 |
 |---|---|---|
 | GRPO from OPD step 80, step 120 | 0.574 / 0.760 | – |
+| GRPO from OPD step 80, step 180 | 0.594 / 0.770 | 0.270 / 0.438 |
 | Its start, OPD step 80 | 0.584 / 0.770 (B300), 0.574 / 0.730 (A100) | 0.283 / 0.449 |
 
 RL did not move the OPD checkpoint: its solve rate stayed at 0.66-0.70 from step 40 while the run from the base
-model climbed toward it, and step 120 evaluates at the starting checkpoint's TBlite score. With 37-45% of sampled
+model climbed toward it, and steps 120 and 180 evaluate at the starting checkpoint's level on both benchmarks. With 37-45% of sampled
 groups all-pass and about 20% all-fail, only about 35% of the rollouts train, against about 50% from the base model.
-Entropy rose from 0.42 to 0.65 by step 100, and the train/rollout gap stayed twice the base run's. Step 180 is being
-evaluated on both benchmarks. Training only on tasks the starting checkpoint does not always solve is in
+Entropy rose from 0.42 to 0.65 by step 100, and the train/rollout gap stayed twice the base run's. Training only on tasks the starting checkpoint does not always solve is in
 [INVESTIGATIONS.md](INVESTIGATIONS.md#ideas-to-explore).
 
 These three runs went through the private fleet's mirror outage, a preemption and a full `oe-adapt` volume on
@@ -291,7 +301,9 @@ steps 200-300. Most remaining errors are 120 s environment-setup timeouts, count
 
 Sampled in open-instruct's exact setup (T=0.7, top_p 0.95, 65536 tokens, 8 concurrent), steps 240 and 360 score
 TBlite 0.512 / 0.780 and 0.506 / 0.740, TB2.1 0.258 / 0.382 and 0.258 / 0.360: within about 0.02 of greedy, so
-decoding does not explain the gap to open-instruct. The run was stopped at step 440 (2026-10-24).
+decoding does not explain the gap to open-instruct. A second sampled run of step 240 (same settings, 2 GPUs,
+2026-10-30) scored TBlite 0.538 / 0.750 and TB2.1 0.258 / 0.382: the two sampled TBlite runs differ by 0.026 pass@1,
+about the run-to-run noise. The run was stopped at step 440 (2026-10-24).
 
 ### Production recipe, 4 nodes
 
