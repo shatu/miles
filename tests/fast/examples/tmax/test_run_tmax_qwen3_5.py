@@ -1,5 +1,6 @@
 """The TMax launcher's GPU layout with SGLang OPD teacher servers (run_tmax_qwen3_5.py)."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -58,3 +59,74 @@ def test_the_opd_checkpoint_recipe_is_a_local_qwen35_9b():
     recipe = launcher._RECIPES["tmax-opd-9b-step80"]
     assert recipe.hf_repo.startswith("/") and recipe.hf_repo.endswith("/hf/step_79")
     assert recipe.megatron_model_type == "qwen3.5-9B" and recipe.enable_thinking
+
+
+def _rollout_only_run(tmp_path, traced: dict[str, int], **kwargs):
+    """A rollout_only run over tasks t0..t9 whose earlier attempts traced ``traced`` episodes per task."""
+    dataset = tmp_path / "dataset"
+    dataset.mkdir(parents=True)
+    with open(dataset / "miles_prompts.jsonl", "w") as f:
+        for i in range(10):
+            f.write(json.dumps({"prompt": [], "metadata": {"task_id": f"t{i}", "image": "x"}}) + "\n")
+    args = launcher.ScriptArgs(
+        model_name="tmax-4b",
+        dataset=str(dataset),
+        rollout_only=True,
+        trace_dir=str(tmp_path / "traces"),
+        output_dir=str(tmp_path / "out"),
+        exp_name="probe_20261114_000000",
+        rollout_batch_size=2,
+        n_samples_per_prompt=4,
+        **kwargs,
+    )
+    run = Path(args.trace_run_dir)
+    run.mkdir(parents=True)
+    lines = [json.dumps({"task_id": task}) for task, n in traced.items() for _ in range(n)]
+    (run / "traces-a.jsonl").write_text("\n".join(lines[: len(lines) // 2]) + "\n")
+    (run / "traces-b.jsonl").write_text("\n".join(lines[len(lines) // 2 :]) + '\n{"task_id": "t9", "mess')
+    return args
+
+
+def _task_ids(path: str) -> list[str]:
+    return [json.loads(line)["metadata"]["task_id"] for line in open(path)]
+
+
+def test_a_rollout_only_run_samples_the_same_tasks_for_every_model_and_restart(tmp_path):
+    fresh = _rollout_only_run(tmp_path / "a", {}, num_rollout=3)
+    other_model = _rollout_only_run(tmp_path / "b", {}, num_rollout=3, rollout_seed=42)
+    tasks = _task_ids(launcher._rollout_plan(fresh)[0])
+    assert len(tasks) == 6 and tasks == _task_ids(launcher._rollout_plan(other_model)[0])
+    reseeded = _rollout_only_run(tmp_path / "c", {}, num_rollout=3, rollout_seed=7)
+    assert _task_ids(launcher._rollout_plan(reseeded)[0]) != tasks
+
+
+def test_a_restarted_rollout_only_run_skips_the_fully_traced_tasks(tmp_path):
+    planned = _task_ids(launcher._rollout_plan(_rollout_only_run(tmp_path / "a", {}, num_rollout=3))[0])
+    # Two planned tasks done (over two hosts' files), one cut off mid-group, one done outside the sample, and the last
+    # line cut off mid-write.
+    traced = {planned[0]: 4, planned[1]: 4, planned[2]: 1}
+    traced |= {next(f"t{i}" for i in range(10) if f"t{i}" not in planned): 4}
+    args = _rollout_only_run(tmp_path / "b", traced, num_rollout=3)
+    prompt_data, num_rollout = launcher._rollout_plan(args)
+    assert _task_ids(prompt_data) == planned[2:]
+    assert num_rollout == 2, "4 of the 6 tasks left, in batches of 2"
+    assert prompt_data != args.prompt_data, "the dataset's prompt file is shared by runs and stays whole"
+
+
+def test_a_fully_traced_rollout_only_run_has_nothing_left(tmp_path):
+    planned = _task_ids(launcher._rollout_plan(_rollout_only_run(tmp_path / "a", {}, num_rollout=1))[0])
+    args = _rollout_only_run(tmp_path / "b", {planned[0]: 4, planned[1]: 5}, num_rollout=1)
+    assert launcher._rollout_plan(args)[1] == 0
+
+
+def test_a_training_run_keeps_its_prompts_and_rollouts(tmp_path):
+    args = _rollout_only_run(tmp_path, {"t0": 4}, num_rollout=3)
+    args.rollout_only = False
+    assert launcher._rollout_plan(args) == (args.prompt_data, 3)
+
+
+def test_rollout_only_and_its_seed_are_fields_not_extra_args():
+    with pytest.raises(AssertionError, match="set rollout_only"):
+        launcher.ScriptArgs(extra_args="--lr 0 --debug-rollout-only")
+    with pytest.raises(AssertionError, match="set rollout_seed"):
+        launcher.ScriptArgs(extra_args="--rollout-seed 7")

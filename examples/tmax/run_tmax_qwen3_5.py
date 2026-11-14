@@ -112,6 +112,7 @@ Smoke test on four 80GB+ GPUs:
 import dataclasses
 import json
 import os
+import random
 import shlex
 import subprocess
 import sys
@@ -275,6 +276,13 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     # save_interval, since snapshots are written at saves.
     hf_snapshot_every: int = 0
     exp_name: str = ""
+    # Generate and trace episodes only (Miles' --debug-rollout-only): no trainer step, weight sync or checkpoint, so
+    # Miles cannot resume such a run from one. The run's tasks are a fixed sample of num_rollout x rollout_batch_size
+    # (rollout_seed's; the same for every model), and a restart (a Beaker retry, or submit.py --exp-name) resumes from
+    # the traces: it runs the tasks of that sample without n_samples_per_prompt episodes in trace_run_dir.
+    rollout_only: bool = False
+    # Miles' --rollout-seed: the prompt shuffle and sampling seeds, and rollout_only's task sample.
+    rollout_seed: int = 42
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
@@ -297,6 +305,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
                 f"{teacher.enable_thinking}: the teacher would score prompts off its own distribution"
             )
         assert not self.opd_pure or self.opd_teacher is not None, "opd_pure needs opd_teacher"
+        assert "--debug-rollout-only" not in self.extra_args, "set rollout_only, which also resumes from the traces"
+        assert "--rollout-seed" not in self.extra_args, "set rollout_seed, which also picks rollout_only's tasks"
+        assert not self.rollout_only or self.trace_dir, "rollout_only resumes from the traces: set trace_dir"
         assert self.opd_teacher_mode == "auto" or self.opd_teacher is not None, "opd_teacher_mode needs opd_teacher"
         if self.opd_mode == "sglang":
             assert self.opd_teacher_gpus > 0, "an SGLang teacher needs opd_teacher_gpus >= 1"
@@ -446,10 +457,48 @@ def _write_prompt_data(args: ScriptArgs) -> None:
             f.write(json.dumps(record) + "\n")
 
 
+def _traced_tasks(trace_run_dir: str, num_samples: int) -> set[str]:
+    """The tasks with at least num_samples episodes in the run's traces (every attempt's, one file per host)."""
+    counts = {}
+    for path in Path(trace_run_dir).glob("traces-*.jsonl"):
+        with open(path) as f:
+            for line in f:
+                try:
+                    task_id = json.loads(line)["task_id"]
+                except (json.JSONDecodeError, KeyError):  # a line cut off when the attempt was stopped
+                    continue
+                counts[task_id] = counts.get(task_id, 0) + 1
+    return {task_id for task_id, count in counts.items() if count >= num_samples}
+
+
+def _rollout_plan(args: ScriptArgs) -> tuple[str, int]:
+    """(prompt file, rollouts to run). A rollout_only run leaves out the tasks already traced (see rollout_only)."""
+    if not args.rollout_only:
+        return args.prompt_data, args.num_rollout
+    rows = open(args.prompt_data).readlines()
+    tasks = random.Random(args.rollout_seed).sample(rows, min(len(rows), args.num_rollout * args.rollout_batch_size))
+    done = _traced_tasks(args.trace_run_dir, args.n_samples_per_prompt)
+    left = [row for row in tasks if json.loads(row)["metadata"]["task_id"] not in done]
+    # A last partial batch tops up from the start of the left tasks (Miles' next epoch): a few get extra samples.
+    num_rollout = -(-len(left) // args.rollout_batch_size)
+    path = f"{args.output_dir}/{args.exp_name or args.run_id}/prompts_untraced.jsonl"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.writelines(left)
+    print(
+        f"rollout_only: {len(tasks) - len(left)} of the run's {len(tasks)} tasks traced, {num_rollout} rollouts left"
+    )
+    return path, num_rollout
+
+
 @app.command()
 @command_utils.dataclass_cli
 def execute(args: ScriptArgs):
     U = args.create_backend()
+    prompt_data, num_rollout = _rollout_plan(args)
+    if num_rollout == 0:
+        print("rollout_only: every task is traced; nothing to run")
+        return
     assert (
         args.sandbox_backend != "gateway" or args.sandbox_gateway_url
     ), "--sandbox-backend gateway needs --gateway-url or TMAX_GATEWAY_URL"
@@ -464,11 +513,12 @@ def execute(args: ScriptArgs):
         ckpt_args += f"--save-hf {args.checkpoint_dir}/hf/step_{{rollout_id}} "  # export errors are logged, not fatal
 
     rollout_args = (
-        f"--prompt-data {args.prompt_data} "
+        f"--prompt-data {prompt_data} "
         "--input-key prompt "
         "--metadata-key metadata "
         "--rollout-shuffle "
-        f"--num-rollout {args.num_rollout} "
+        f"--num-rollout {num_rollout} "
+        f"--rollout-seed {args.rollout_seed} "
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 1.0 "
@@ -606,6 +656,8 @@ def execute(args: ScriptArgs):
         # the gateway the entrypoint starts for --sandbox-backend gateway.
         misc_args += "--pin-rollout-manager-to-head "
 
+    if args.rollout_only:
+        misc_args += "--debug-rollout-only "
     if args.dump_training_data:
         assert args.trace_dir, "dump_training_data writes next to the traces: set trace_dir"
         misc_args += (
