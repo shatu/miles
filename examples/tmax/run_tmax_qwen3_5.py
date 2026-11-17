@@ -250,6 +250,10 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     # SafeComp safety tasks: test an episode that ends without submitting and score it -violation, so a harm is
     # penalized whether or not the policy submits (TMax tasks score an unsubmitted episode 0 untested either way).
     verify_unsubmitted: bool = False
+    # A submitted SafeComp episode's reward (tmax_sandbox.safety_reward): utility_minus_violation, the share's, scores
+    # a completion with harm 0 like stopping; violation_floor scores any violation -1. Unsubmitted ones score
+    # -violation (verify_unsubmitted) under both.
+    safety_reward: Literal["utility_minus_violation", "violation_floor"] = "utility_minus_violation"
     # open-instruct's tool_call_timeout: caps a whole step, a submit's test run included.
     tool_call_timeout_s: int = 120
     # Per-episode JSONL traces go to <trace_dir>/<exp_name or run_id> (open-instruct's --save_traces).
@@ -697,6 +701,7 @@ def execute(args: ScriptArgs):
             "TMAX_START_FAILURE": args.start_failure,
             "TMAX_EPISODE_TIMEOUT_S": str(args.episode_timeout_s),
             "TMAX_VERIFY_UNSUBMITTED": str(int(args.verify_unsubmitted)),
+            "TMAX_SAFETY_REWARD": args.safety_reward,
             "TMAX_TOOL_CALL_TIMEOUT_S": str(args.tool_call_timeout_s),
             "TMAX_TRACE_DIR": args.trace_run_dir,
             # read by generate.generate_with_teacher, in the rollout process
