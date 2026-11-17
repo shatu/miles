@@ -42,7 +42,7 @@ beaker:
   cluster: ai2/jupiter
   workspace: ai2/oe-agents
   budget: ai2/oe-omai
-  priority: high
+  priority: urgent
   min_runtime: 8h
   retries: 10                                 # a retry resumes from the traces
   gpus: 4
