@@ -57,6 +57,7 @@ Args:
   --optimizer-cpu-offload: keep Adam state in host RAM (default: on; turn off on 80GB+ GPUs).
   --dataset: the tasks, a Hugging Face repo in allenai/tmax-15k-open-instruct's layout or the absolute path of such a
       directory already extracted, e.g. SafeComp's from safety/make_dataset.py (default: allenai/tmax-15k-open-instruct).
+  --dataset-split: the dataset splits the prompts come from, comma-separated (default: train).
   --num-prompts: keep only the first N prompts, for smoke tests (default: all).
   --start-failure: zero | drop, for a sandbox that never starts (default: zero, open-instruct's behavior).
   --episode-timeout-s: wall-clock cap per episode, 0 for none (default: 0).
@@ -118,6 +119,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -231,6 +233,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     # and env_config, plus task-data.tar.gz), or the absolute path of such a directory already extracted, as
     # safety/make_dataset.py writes for SafeComp's tasks.
     dataset: str = "allenai/tmax-15k-open-instruct"
+    # The dataset splits (data/<split>-*.parquet) the run's prompts come from, comma-separated, e.g. SafeComp's
+    # held-out "validation,id_test,request_only_ood,security_ood" for a rollout_only eval.
+    dataset_split: str = "train"
     num_prompts: int = 0
     max_steps: int = 64
     # podman: containers on podman daemons this job runs; gateway: on a LiteRegistry podman fleet (tmax_gateway.py).
@@ -401,8 +406,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 
     @property
     def prompt_data(self) -> str:
+        split = "" if self.dataset_split == "train" else "_" + self.dataset_split.replace(",", "+")
         suffix = f"_first{self.num_prompts}" if self.num_prompts else ""
-        return f"{self.dataset_dir}/miles_prompts{suffix}.jsonl"
+        return f"{self.dataset_dir}/miles_prompts{split}{suffix}.jsonl"
 
 
 @app.command()
@@ -447,11 +453,19 @@ def _fetch_command(hf_repo: str, dst: str) -> str:
 
 
 def _write_prompt_data(args: ScriptArgs) -> None:
-    """One JSONL row per task: the chat prompt with the TMax system prompt, plus task_id and image."""
-    rows = pd.read_parquet(f"{args.dataset_dir}/data/train-00000-of-00001.parquet")
+    """One JSONL row per task of the dataset_split splits: the chat prompt with the TMax system prompt, plus task_id and
+    image. Written to a temporary file and renamed, so jobs preparing the same dataset never read a partial one."""
+    rows = pd.concat(
+        [
+            pd.read_parquet(f"{args.dataset_dir}/data/{split}-00000-of-00001.parquet")
+            for split in args.dataset_split.split(",")
+        ],
+        ignore_index=True,
+    )
     if args.num_prompts:
         rows = rows.head(args.num_prompts)
-    with open(args.prompt_data, "w") as f:
+    tmp = f"{args.prompt_data}.{uuid.uuid4().hex}.tmp"
+    with open(tmp, "w") as f:
         for row in rows.itertuples():
             user_turns = [{"role": m["role"], "content": m["content"]} for m in row.messages if m["role"] != "system"]
             record = {
@@ -459,6 +473,7 @@ def _write_prompt_data(args: ScriptArgs) -> None:
                 "metadata": {"task_id": row.env_config["task_id"], "image": row.env_config["image"]},
             }
             f.write(json.dumps(record) + "\n")
+    os.replace(tmp, args.prompt_data)
 
 
 def _traced_tasks(trace_run_dir: str, num_samples: int) -> set[str]:

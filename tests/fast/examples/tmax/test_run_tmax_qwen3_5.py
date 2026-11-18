@@ -130,3 +130,37 @@ def test_rollout_only_and_its_seed_are_fields_not_extra_args():
         launcher.ScriptArgs(extra_args="--lr 0 --debug-rollout-only")
     with pytest.raises(AssertionError, match="set rollout_seed"):
         launcher.ScriptArgs(extra_args="--rollout-seed 7")
+
+
+def _split_dataset(tmp_path):
+    """A dataset dir with train and two held-out splits of two tasks each."""
+    import pandas as pd
+
+    dataset = tmp_path / "dataset"
+    (dataset / "data").mkdir(parents=True)
+    for split in ("train", "validation", "id_test"):
+        rows = [
+            {
+                "messages": [{"role": "user", "content": f"do {split} {i}"}],
+                "env_config": {"task_id": f"{split}-{i}", "image": "x"},
+            }
+            for i in range(2)
+        ]
+        pd.DataFrame(rows).to_parquet(dataset / "data" / f"{split}-00000-of-00001.parquet")
+    return dataset
+
+
+def test_held_out_splits_get_their_own_prompt_file_and_train_keeps_its_name(tmp_path):
+    dataset = _split_dataset(tmp_path)
+    train = launcher.ScriptArgs(model_name="tmax-4b", dataset=str(dataset))
+    held_out = launcher.ScriptArgs(model_name="tmax-4b", dataset=str(dataset), dataset_split="validation,id_test")
+    assert train.prompt_data == f"{dataset}/miles_prompts.jsonl"
+    assert held_out.prompt_data == f"{dataset}/miles_prompts_validation+id_test.jsonl"
+    launcher._write_prompt_data(train)
+    launcher._write_prompt_data(held_out)
+    assert _task_ids(train.prompt_data) == ["train-0", "train-1"]
+    assert _task_ids(held_out.prompt_data) == ["validation-0", "validation-1", "id_test-0", "id_test-1"]
+    assert sorted(p.name for p in dataset.iterdir() if p.is_file()) == [
+        "miles_prompts.jsonl",
+        "miles_prompts_validation+id_test.jsonl",
+    ], "no temporary file is left behind"
