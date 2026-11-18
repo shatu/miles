@@ -146,6 +146,7 @@ _MODEL_NAMES = Literal[
     "tmax-9b",
     "tmax-27b",
     "tmax-opd-9b-step80",
+    "tmax-4b-safecomp-floor-step40",
 ]
 
 
@@ -186,6 +187,16 @@ _RECIPES: dict[str, _Recipe] = {
         "tmax_prod4node_gateway_opd_9b_20261027_022952/checkpoints/hf/step_79",
         "qwen3.5-9B",
         enable_thinking=True,
+    ),
+    # SafeComp stage-2 run B's step-40 HF snapshot (tmax-4b on safecomp-tmax-risk-only with the violation-floor
+    # reward, tmax_prod2node_safety_tmax4b_risk_only_violation_floor_20261117_212229's hf/step_39): allenai/tmax-4b's
+    # config and template, language-model weights only.
+    "tmax-4b-safecomp-floor-step40": _Recipe(
+        "/weka/oe-adapt-default/shashankg/checkpoints/"
+        "tmax_prod2node_safety_tmax4b_risk_only_violation_floor_20261117_212229/step_39",
+        "qwen3.5-4B",
+        enable_thinking=True,
+        language_only=True,
     ),
 }
 
