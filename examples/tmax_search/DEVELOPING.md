@@ -44,7 +44,8 @@ vllm serve Qwen/Qwen3.8-27B --port 8021 --language-model-only --quantization fp8
 ```
 
 `tools/` checks the port against Prime-RL's own trajectories (`<run>/artifacts/<attempt>/trajectories/train/step_N.jsonl`
-of a Prime-RL search run) and against live episodes; each takes the pinned source from `PRIME_RL_SOURCE` and needs
+of a Prime-RL search run) and against live episodes; each takes the pinned source from `PRIME_RL_SOURCE` (the live
+ones the experiment from `PRIME_RL_CONFIG`, default `search-agent-bc-rl-v1-1-fp32-lr5e-7`) and needs
 `PYTHONPATH=examples/tmax_search:$SRC/deps/literegistry/literegistry_tool_client/src:$SRC/environments/search_agent:.`:
 
 | Tool | Checks |

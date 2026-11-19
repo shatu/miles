@@ -40,7 +40,9 @@ async def main() -> None:
     path, judge_url, tokenizer = sys.argv[1:4]
     env = resolve_env_args(
         prime_rl_source=SRC,
-        prime_rl_config="configs/experiments/search-agent-bc-rl-v1-1-fp32-lr5e-7/rl.toml",
+        prime_rl_config=os.environ.get(
+            "PRIME_RL_CONFIG", "configs/experiments/search-agent-bc-rl-v1-1-fp32-lr5e-7/rl.toml"
+        ),
         prime_rl_checkout="/weka/stevenc/prime-rl",
         weka_mount="/weka/oe-adapt-default",
         search_url="http://unused/search",
