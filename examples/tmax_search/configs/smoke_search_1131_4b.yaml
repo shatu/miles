@@ -1,0 +1,46 @@
+# 4-GPU smoke of steven-prime-rl's search-agent-bc-rl-1131-fp32-lr5e-7, from the 2026-11-18 sealed source: the
+# 1,131-question bc-rl-subset over the no-HF corpus (localsearch:bc-rl-v1-no-hf), a truncated final turn penalized as
+# a missing answer, and the retrieval service's FetchClient; training otherwise as bc-rl-v1-1. On hamishivi/Qwen3.5-4B
+# and the 600 s session-request timeout the 400-step prod run needed. Same layout and per-GPU load as
+# smoke_search_4b_fp32_head_imgd0831a475b.yaml: 3 steps of 2 questions x 8 rollouts, 128k per episode, fp32 logits.
+exp_name: search_smoke_1131_4b
+model_name: Qwen3.5-4B-tmax-template          # hamishivi/Qwen3.5-4B
+prime_rl_source: /weka/oe-adapt-default/shashankg/miles_search/prime-rl-sources/ebe1abbae42ec6587ff36647fca2b007583abd4501e45e0be15a37a3e1495160/source
+prime_rl_config: configs/experiments/search-agent-bc-rl-1131-fp32-lr5e-7/rl.toml
+num_gpus_per_node: 3
+async_rollout_gpus: 1
+rollout_batch_size: 2
+n_samples_per_prompt: 8
+num_rollout: 3
+async_max_concurrent_samples: 32
+max_seq_len: 131072
+rollout_max_response_len: 32768
+tensor_model_parallel_size: 1
+context_parallel_size: 1
+max_tokens_per_gpu: 131072
+optimizer_cpu_offload: false
+fp32_lm_head: true
+save_interval: 1000
+hf_snapshot_every: 0
+extra_args: "--log-probs-backend fused --distributed-timeout-minutes 120 --sglang-watchdog-timeout 1800"
+model_dir: /weka/nora-default/shashankg/miles_tmax_v2/models
+data_dir: /weka/nora-default/shashankg/miles_tmax_v2/datasets
+output_dir: /weka/nora-default/shashankg/miles_tmax_v2/output
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+dump_training_data: true
+
+beaker:
+  launcher: examples/tmax_search/run_search_qwen3_5.py
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: urgent
+  retries: 0
+  gpus: 3
+  shared_memory: 256GiB
+  image: beaker:shashankg/tmax-miles-train-d0831a475b
+  env:
+    MILES_SESSION_REQUEST_TIMEOUT_S: 600         # collect samples: wait up to 10 min instead of 2
+  # Prime-RL's search services as tasks of this experiment (examples/tmax_search/beaker/services.py), fewer replicas.
+  search_services:
+    replicas: {terminal: 2, localsearch: 2}
