@@ -107,6 +107,48 @@ The fp32 head lowers the gap by about 30%; the training GPUs peaked at about 100
 logits instead (the first version of `--fp32-lm-head`) needed 110 GB more on the second step's log-prob pass and ran
 out of memory.
 
+### Production run
+
+`search_prod4node_4b_bcrl_v11_high8h_20261112_203111` (W&B `ai2-llm/oe-general-agents`): Prime-RL's 200 steps at its
+own scale, then continued to 400 with the same recipe, 2026-11-12 to 11-18. Raw reward is the judge's score minus the
+stderr penalty; the zero-variance share is the fraction of groups whose 32 rollouts all scored the same (almost all
+solved), which train with zero advantage as in Prime-RL:
+
+| Steps | Mean raw reward | Mean response | Zero-variance groups | Train/rollout log-prob gap | Grad norm |
+|---|---|---|---|---|---|
+| 0–39 | 0.52 | 48k | 4% | 0.0080 | 0.107 |
+| 40–79 | 0.65 | 53k | 13% | 0.0081 | 0.091 |
+| 80–119 | 0.68 | 58k | 15% | 0.0080 | 0.076 |
+| 120–159 | 0.73 | 60k | 21% | 0.0080 | 0.072 |
+| 160–199 | 0.68 | 63k | 25% | 0.0079 | 0.066 |
+| 200–239 | 0.73 | 60k | 24% | 0.0076 | 0.056 |
+| 240–279 | 0.76 | 65k | 23% | 0.0082 | 0.053 |
+| 280–319 | 0.72 | 57k | 26% | 0.0091 | 0.051 |
+| 320–359 | 0.71 | 54k | 30% | 0.0083 | 0.048 |
+| 360–399 | 0.72 | 57k | 38% | 0.0086 | 0.048 |
+
+Reward plateaus near 0.72–0.76 after step 120; by step 400 the run has made about 2.6 passes over the 1,215 questions
+and over a third of the groups carry no gradient. What the run needed, in its configs' order:
+
+- **Minimum runtime.** Without one (`prod_4node_search_4b.yaml`) Holmes preempted it twice before its first step;
+  `prod_4node_search_4b_high_minruntime8h.yaml` runs at priority high with 8 h, and each later preemption came at or
+  after that mark and resumed from the last checkpoint.
+- **Session-request timeout.** At 120 s about 2.5% of the episodes failed to collect their samples in bursts around
+  weight updates, each dropping its group of 32 (149 groups by step 60); `..._timeout600.yaml` sets
+  `MILES_SESSION_REQUEST_TIMEOUT_S` to 600 and none failed afterwards.
+- **Continuing past the planned length.** Raising `num_rollout` changes the LR scheduler's total iterations, which
+  Megatron refuses to load from the checkpoint; `..._to400_ckptsched.yaml` passes `--use-checkpoint-opt_param-scheduler`
+  (the constant learning rate is unaffected).
+- **Retries.** `..._to400_ckptsched_retries10.yaml` allows 10 Beaker retries for preemptions, node health-check
+  cancellations and hardware faults (one InfiniBand port error broke a gradient reduce at step 225).
+
+The run trained `Qwen/Qwen3.5-4B`, Prime-RL's model; RL recipes should use `hamishivi/Qwen3.5-4B`, whose only difference
+is a chat template that keeps every earlier turn's reasoning. Training is unaffected, since the session server builds
+each prompt from the generated tokens plus Miles' own `qwen3.5_fixed.jinja` with `preserve_thinking` (every trained
+sample keeps each turn's `<think>` block), but the HF snapshots carry the stock template: the copies under
+`checkpoints/hf_eval/` (steps 99, 119, 139, 199, 279, 299, 399) swap in hamishivi's `chat_template.jinja` and
+`tokenizer_config.json` for evaluation.
+
 ## Known differences
 
 - **Tool schema tokens.** Miles renders the tools through SGLang's `Tool` model, as SGLang's own chat serving does: each
