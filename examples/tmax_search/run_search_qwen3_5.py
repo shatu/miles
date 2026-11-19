@@ -2,10 +2,11 @@
 
 =====================
 
-Trains Qwen/Qwen3.5-4B (thinking on) to answer BrowseComp-style questions with two tools, a BM25 ``search`` over a
-local corpus and a ``webterminal`` that pipes a corpus page through rg/sed/head; a Qwen3.8-27B judge scores the final
+Trains Qwen3.5-4B (thinking on; by default hamishivi/Qwen3.5-4B) to answer BrowseComp-style questions with two tools,
+a BM25 ``search`` over a local corpus and a ``webterminal`` that pipes a corpus page through rg/sed/head; a Qwen3.8-27B
+judge scores the final
 answer. It reproduces a Prime-RL search experiment, by default steven-prime-rl's
-``configs/experiments/search-agent-bc-rl-v1-1-fp32-lr5e-7``: the environment's settings are read from that
+``configs/experiments/search-agent-bc-rl-1131-fp32-lr5e-7``: the environment's settings are read from that
 experiment's ``rl.toml`` in the pinned Prime-RL source (``search_config``), the trainer's are this launcher's fields,
 each set as Prime-RL's ``[trainer]`` and ``[orchestrator]`` tables set them (the mapping is in README.md).
 
@@ -20,7 +21,8 @@ it to Megatron torch_dist. `execute` submits the training job.
 =====================
 
 Args:
-  --model-name: a key of _RECIPES (default: Qwen3.5-4B, Prime-RL's Qwen/Qwen3.5-4B).
+  --model-name: a key of _RECIPES (default: Qwen3.5-4B-tmax-template, hamishivi/Qwen3.5-4B; Qwen3.5-4B is Prime-RL's
+      stock Qwen/Qwen3.5-4B).
   --prime-rl-source: the pinned Prime-RL source tree (a sealed copy of steven-prime-rl).
   --prime-rl-config: the experiment's rl.toml, relative to --prime-rl-source.
   --prime-rl-checkout / --prime-rl-weka-mount: where the Prime-RL job had its checkout and its /weka, to map the
@@ -67,7 +69,7 @@ from launch_common import apply_yaml_config, fetch_command, wandb_args  # noqa: 
 
 from miles.utils.external_utils import command_utils  # noqa: E402
 
-_MODEL_NAMES = Literal["Qwen3.5-4B"]
+_MODEL_NAMES = Literal["Qwen3.5-4B-tmax-template", "Qwen3.5-4B"]
 
 
 @dataclass(frozen=True)
@@ -77,7 +79,12 @@ class _Recipe:
 
 
 _RECIPES: dict[str, _Recipe] = {
-    # Prime-RL's model and renderer: stock Qwen/Qwen3.5-4B, thinking on (Miles' qwen35 template opens <think>).
+    # RL runs train hamishivi/Qwen3.5-4B: Qwen/Qwen3.5-4B's weights and tokenizer with a chat template that keeps every
+    # earlier turn's reasoning, so its HF snapshots evaluate as trained. The key is the TMax recipe's, sharing its
+    # converted checkpoint.
+    "Qwen3.5-4B-tmax-template": _Recipe("hamishivi/Qwen3.5-4B", "qwen3.5-4B"),
+    # Prime-RL's model: stock Qwen/Qwen3.5-4B. Training is the same (Miles' qwen35 template opens <think> and keeps the
+    # reasoning either way); its snapshots carry the stock template, which drops earlier turns' reasoning.
     "Qwen3.5-4B": _Recipe("Qwen/Qwen3.5-4B", "qwen3.5-4B"),
 }
 
@@ -87,12 +94,12 @@ app = typer.Typer()
 @dataclass
 class ScriptArgs(command_utils.ExecuteTrainConfig):
     run_id: str = command_utils.create_run_id()
-    model_name: _MODEL_NAMES = "Qwen3.5-4B"
+    model_name: _MODEL_NAMES = "Qwen3.5-4B-tmax-template"
     prime_rl_source: str = (
         "/weka/oe-adapt-default/shashankg/miles_search/prime-rl-sources/"
-        "a5fcb924645d9bd8f326efd5087c8de6447c83fe17c6d07c36e99ee736d30a37/source"
+        "ebe1abbae42ec6587ff36647fca2b007583abd4501e45e0be15a37a3e1495160/source"
     )
-    prime_rl_config: str = "configs/experiments/search-agent-bc-rl-v1-1-fp32-lr5e-7/rl.toml"
+    prime_rl_config: str = "configs/experiments/search-agent-bc-rl-1131-fp32-lr5e-7/rl.toml"
     prime_rl_checkout: str = "/weka/stevenc/prime-rl"
     prime_rl_weka_mount: str = "/weka/oe-adapt-default"
     # The services' gateway; empty inherits SEARCH_GATEWAY_URL. Each *_url, if set, wins over the gateway's route.

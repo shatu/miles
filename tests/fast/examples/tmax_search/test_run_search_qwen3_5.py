@@ -17,9 +17,10 @@ from tests.fast.launch_scripts.py_harness import (  # noqa: E402
     install_command_recorder,
 )
 
+# The launcher's default source: the 2026-11-18 sealed copy, whose experiment is search-agent-bc-rl-1131-fp32-lr5e-7.
 _SOURCE = Path(
     "/weka/oe-adapt-default/shashankg/miles_search/prime-rl-sources/"
-    "a5fcb924645d9bd8f326efd5087c8de6447c83fe17c6d07c36e99ee736d30a37/source"
+    "ebe1abbae42ec6587ff36647fca2b007583abd4501e45e0be15a37a3e1495160/source"
 )
 pytestmark = pytest.mark.skipif(not _SOURCE.is_dir(), reason="needs the pinned Prime-RL source on weka")
 
@@ -59,6 +60,10 @@ def test_prime_rl_recipe_flags(monkeypatch, tmp_path):
     assert resolved["max_total_completion_tokens"] == 131072
     assert resolved["final_warning"].startswith("IMPORTANT: This was your last allowed tool call.")
     assert str(_SOURCE / "environments/search_agent") in env["PYTHONPATH"].split(":")
+    assert resolved["dataset"].endswith("search_agents/bc-rl-subset/train.jsonl")
+    assert resolved["local_search_model_path"] == "localsearch:bc-rl-v1-no-hf"
+    assert resolved["penalize_truncated_final_turn"]
+    assert _flag(argv, "--hf-checkpoint").endswith("/Qwen3.5-4B-tmax-template")  # hamishivi/Qwen3.5-4B
 
 
 def test_bf16_head_and_per_token_loss(monkeypatch, tmp_path):
