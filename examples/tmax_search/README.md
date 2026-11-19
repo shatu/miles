@@ -100,10 +100,17 @@ Miles task marked the run complete:
 | `smoke_search_4b` (bf16 logits), `01M662W57MFXW38HEYWDQJYAHN` | 0.27, 0.37, 0.35 | 0.011–0.013 | 92 of 93 (45) |
 | `smoke_search_4b_fp32_head`, `01M667F63PRPE8ZXA9YB9J1HX9` | 0.23, 0.52, 0.39 | 0.0078, 0.0081, 0.0080 | 83 of 84 (35) |
 | `smoke_search_4b_fp32_head_imgd0831a475b` (image `tmax-miles-train-d0831a475b`, no min_runtime), `01M78B4DB8BB6T8ASJNCTDMT69` | 0.44, 0.35, 0.34 | 0.0073, 0.0079, 0.0081 | 102 of 102 (48) |
+| `smoke_search_1131_4b` (bc-rl-1131 from the 2026-11-18 source, hamishivi/Qwen3.5-4B), `01M7TNHSDA24D2TPRFCVYR1NKD` | 0.18, 0.46, 0.24 | 0.0071, 0.0078, 0.0081 | 110 of 110 (51) |
 
 The fp32 head lowers the gap by about 30%; the training GPUs peaked at about 100 of 268 GB. Materializing the fp32
 logits instead (the first version of `--fp32-lm-head`) needed 110 GB more on the second step's log-prob pass and ran
 out of memory.
+
+The 2026-11-18 sealed source (`ebe1abbae42e…`, bc-rl-1131's experiment) was checked locally before its smoke: 100
+Prime-RL trajectories of `search-agent-001-3-quote-v3` replayed through its tool client and services on the old corpus
+(1,379 calls) differ in 10 observations, all from the terminal service being newer than that run's (as with the first
+source), with stderr penalties identical in all 100; 16 live episodes of hamishivi/Qwen3.5-4B on the no-HF corpus all
+end with a final answer (12 to 105 turns).
 
 ### Production run
 
