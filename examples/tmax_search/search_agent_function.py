@@ -25,6 +25,7 @@ episode (messages and metrics), and ``AGENT_MODEL_NAME`` names the policy model 
 """
 
 import contextlib
+import inspect
 import json
 import logging
 import math
@@ -54,7 +55,7 @@ from miles.rollout.agentic.session import openai_session_url
 
 logger = logging.getLogger(__name__)
 
-# Prime-RL never sends a Jina request with a local search model path; FetchClient still takes the URL.
+# Sources before 2026-11-08 take Jina's URL even though a local search model path routes every fetch to the service.
 _JINA_READER_URL = "https://r.jina.ai"
 
 
@@ -111,6 +112,12 @@ class _Episode:
     gen_times: list[float] = field(default_factory=list)
     tool_times: list[float] = field(default_factory=list)
 
+    @property
+    def rollout_truncated(self) -> bool:
+        """search_agent.judging.rollout_truncated: an overlong prompt, or a model turn that did not stop (a
+        length-truncated turn ends the episode here, so it is the last one)."""
+        return self.truncated or (self.turns > 0 and self.last_finish_reason != "stop")
+
 
 async def run(
     base_url: str,
@@ -138,6 +145,8 @@ async def run(
             "error": episode.error,
             # search_agent.judging: an error, a truncated step or a final turn that did not stop is not judged.
             "incomplete": bool(episode.error or episode.truncated or episode.last_finish_reason != "stop"),
+            # The newer sources' missing-final-answer penalty also covers a truncated rollout.
+            "rollout_truncated": episode.rollout_truncated,
             "final_role": last.get("role"),
             "final_has_tool_calls": bool(last.get("tool_calls")),
             "final_content": str(last.get("content") or ""),
@@ -287,6 +296,20 @@ def _budget_warning(episode: _Episode, env: Mapping[str, Any]) -> str:
     return "\n\n".join(warnings)
 
 
+def _fetch_client(env: Mapping[str, Any]) -> FetchClient:
+    """FetchClient as the pinned source's load_environment builds it: the retrieval service and model path (sources
+    from 2026-11-08 on), or Jina's URL plus the local search service, which the model path routes every fetch to."""
+    common = {"timeout": env["timeout"], "max_retries": env["max_retries"]}
+    if "model_path" in inspect.signature(FetchClient).parameters:
+        return FetchClient(env["search_server_url"], model_path=env["local_search_model_path"], **common)
+    return FetchClient(
+        _JINA_READER_URL,
+        local_search_server_url=env["search_server_url"],
+        local_search_model_path=env["local_search_model_path"],
+        **common,
+    )
+
+
 class _Tools:
     """The episode's tool clients, built as search_agent.environment.load_environment builds them."""
 
@@ -304,14 +327,7 @@ class _Tools:
             max_retries=env["max_retries"],
             truncation=env["terminal_truncation"],
         )
-        fetch = FetchClient(
-            _JINA_READER_URL,
-            timeout=env["timeout"],
-            max_retries=env["max_retries"],
-            local_search_server_url=env["search_server_url"],
-            local_search_model_path=env["local_search_model_path"],
-        )
-        self.webterminal_client = WebTerminalExecutionClient(terminal, fetch)
+        self.webterminal_client = WebTerminalExecutionClient(terminal, _fetch_client(env))
         self.asset_store = WebAssetStore()  # the rollout's page cache, keyed by URL
 
         num_results = env["search_num_results"]

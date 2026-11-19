@@ -11,6 +11,12 @@ PRIME_RL_SOURCE = Path(
     "a5fcb924645d9bd8f326efd5087c8de6447c83fe17c6d07c36e99ee736d30a37/source"
 )
 PRIME_RL_CONFIG = "configs/experiments/search-agent-bc-rl-v1-1-fp32-lr5e-7/rl.toml"
+# A newer sealed source (2026-11-18) and its experiment: the truncated-final-turn penalty, the service FetchClient.
+NEW_PRIME_RL_SOURCE = Path(
+    "/weka/oe-adapt-default/shashankg/miles_search/prime-rl-sources/"
+    "ebe1abbae42ec6587ff36647fca2b007583abd4501e45e0be15a37a3e1495160/source"
+)
+NEW_PRIME_RL_CONFIG = "configs/experiments/search-agent-bc-rl-1131-fp32-lr5e-7/rl.toml"
 
 needs_prime_rl_source = pytest.mark.skipif(not PRIME_RL_SOURCE.is_dir(), reason="needs the pinned Prime-RL source")
 

@@ -5,7 +5,13 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from tests.fast.examples.tmax_search.conftest_paths import PRIME_RL_CONFIG, PRIME_RL_SOURCE, needs_prime_rl_source
+from tests.fast.examples.tmax_search.conftest_paths import (
+    NEW_PRIME_RL_CONFIG,
+    NEW_PRIME_RL_SOURCE,
+    PRIME_RL_CONFIG,
+    PRIME_RL_SOURCE,
+    needs_prime_rl_source,
+)
 
 pytestmark = needs_prime_rl_source
 
@@ -130,3 +136,42 @@ def test_extracted_none_is_no_answer(reward, monkeypatch):
     sample = _sample([_FINAL_TURN])
     value, trace, _ = _score(reward, monkeypatch, sample, ["<extracted_answer>None</extracted_answer>"])
     assert value == 0.0 and trace["skipped"] == "extraction:no_final_answer"
+
+
+def _env(source, config):
+    import search_config
+
+    return search_config.resolve_env_args(
+        prime_rl_source=str(source),
+        prime_rl_config=config,
+        prime_rl_checkout="/weka/stevenc/prime-rl",
+        weka_mount="/weka/oe-adapt-default",
+        search_url="http://search/search",
+        terminal_url="http://terminal/terminal",
+        judge_url="http://judge/v1",
+    )
+
+
+@pytest.mark.skipif(not NEW_PRIME_RL_SOURCE.is_dir(), reason="needs the newer sealed Prime-RL source")
+def test_the_source_decides_the_truncated_final_turn_penalty():
+    assert _env(NEW_PRIME_RL_SOURCE, NEW_PRIME_RL_CONFIG)["penalize_truncated_final_turn"]
+    assert not _env(PRIME_RL_SOURCE, PRIME_RL_CONFIG)["penalize_truncated_final_turn"]
+
+
+@pytest.mark.parametrize("penalize, expected", [(True, -1.0), (False, 0.0)])
+def test_length_truncated_final_turn(reward, monkeypatch, penalize, expected):
+    import search_config
+
+    env = search_config.env_args() | {"penalize_truncated_final_turn": penalize}
+    monkeypatch.setenv(search_config.ENV_ARGS_VAR, json.dumps(env))
+    search_config.env_args.cache_clear()
+    cut = "I found it.\n</think>\n\nThe answer is 19"
+    sample = _sample(
+        [_TOOL_TURN, cut],
+        stop_condition="length",
+        incomplete=True,
+        rollout_truncated=True,
+        final_content="The answer is 19",
+    )
+    value, trace, judge = _score(reward, monkeypatch, sample, [])
+    assert value == expected and trace["skipped"] == "incomplete_rollout" and not judge.requests

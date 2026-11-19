@@ -60,7 +60,13 @@ async def _reward(args, sample: Sample) -> float | None:
     _write_trace(sample, trace)
     if not trace["valid"]:
         return None
-    missing = episode["final_has_tool_calls"] or not episode["final_content"].strip()
+    # Newer sources (env penalize_truncated_final_turn) also penalize a rollout cut off by a token, context or turn
+    # limit, which the judge scores 0 either way.
+    missing = (
+        episode["final_has_tool_calls"]
+        or not episode["final_content"].strip()
+        or (env.get("penalize_truncated_final_turn", False) and episode.get("rollout_truncated", False))
+    )
     components = {
         "judge_answer": trace["score"],
         "tool_stderr_penalty_reward": -env["tool_stderr_penalty"] * max(episode["stderr_count"], 0),

@@ -23,6 +23,9 @@ import tomllib
 
 ENV_ARGS_VAR = "SEARCH_ENV_ARGS"
 _LEGACY_ENV_ID = "search_agent.environment"
+# Where Prime-RL decides whether a rollout ended cut off (search_agent.judging.rollout_truncated, from cb0dd512 of
+# 2026-11-09 on); a source that has it also gives such a rollout the missing-final-answer penalty.
+_JUDGING_MODULE = "environments/search_agent/search_agent/judging.py"
 
 # The load_environment arguments the port implements, with the defaults load_environment gives them
 # (environments/search_agent/search_agent/environment.py), for a table that omits them.
@@ -121,6 +124,7 @@ def resolve_env_args(
         "search_description": local(search["description_path"]).read_text().strip(),
         "webterminal_description": local(webterminal["description_path"]).read_text().strip(),
         "judge_prompts": json.loads(judge_prompts.read_text()),
+        "penalize_truncated_final_turn": "def rollout_truncated(" in (source / _JUDGING_MODULE).read_text(),
     }
 
 

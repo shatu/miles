@@ -174,3 +174,54 @@ def test_model_caused_terminal_stderr_is_counted(saf):
     asyncio.run(tools.call(episode, "webterminal", {"command": "browse https://x.org"}))
     assert episode.stderr_count == 1
     assert tools.outcomes["webterminal"] == {"calls": 2, "failures": 2, "unknown_failures": 1, "fetch_failures": 1}
+
+
+class _ServiceFetchClient:
+    """The 2026-11-08 FetchClient: the retrieval service and a model path."""
+
+    def __init__(self, server_url, *, model_path=None, timeout=65, max_retries=3):
+        self.args = {"server_url": server_url, "model_path": model_path}
+
+
+class _JinaFetchClient:
+    """The earlier FetchClient: Jina's URL plus the local search service."""
+
+    def __init__(
+        self, server_url, *, timeout=65, max_retries=3, local_search_server_url=None, local_search_model_path=None
+    ):
+        self.args = {"server_url": server_url, "local": (local_search_server_url, local_search_model_path)}
+
+
+@pytest.mark.parametrize(
+    "client, expected",
+    [
+        (_ServiceFetchClient, {"server_url": "http://search/search", "model_path": "localsearch:bc-rl-v1"}),
+        (
+            _JinaFetchClient,
+            {"server_url": "https://r.jina.ai", "local": ("http://search/search", "localsearch:bc-rl-v1")},
+        ),
+    ],
+)
+def test_fetch_client_as_the_source_builds_it(saf, monkeypatch, client, expected):
+    import search_config
+
+    monkeypatch.setattr(saf, "FetchClient", client)
+    assert saf._fetch_client(search_config.env_args()).args == expected
+
+
+class _LengthPolicy(_Policy):
+    """Cuts every turn off at the token limit."""
+
+    async def create(self, **kwargs):
+        response = await super().create(**kwargs)
+        response.choices[0].finish_reason = "length"
+        return response
+
+
+def test_a_length_truncated_turn_is_a_truncated_rollout(saf):
+    episode = saf._Episode(messages=[{"role": "system", "content": "s"}, {"role": "user", "content": "q"}])
+    policy = _LengthPolicy([[_call("search", {"query": "x"})]])
+    asyncio.run(saf._loop(episode, saf.env_args(), policy, _Tools(), {"max_tokens": 32768}, 131072))
+    assert episode.stop_condition == "length" and episode.rollout_truncated
+    finished, _, _ = _run(saf, ["The answer is 1955."])
+    assert finished.stop_condition == "no_tools_called" and not finished.rollout_truncated
