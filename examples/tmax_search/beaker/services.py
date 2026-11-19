@@ -6,13 +6,13 @@ GPU. Each task boots from the pinned Prime-RL source (beaker/runtime/entrypoint.
 endpoint files on weka, and runs under ``prime_rl_beaker.coupled worker``, which exits 0 once ``<state-dir>/complete``
 exists.
 
-``services_template.json`` holds those tasks, taken from an accepted Prime-RL submission rendered by the pinned source
-(``derive``), with its run-specific values replaced by ``{PLACEHOLDERS}``. ``service_tasks`` fills them for a Miles run
-with the values of the Prime-RL experiment's ``run.yaml`` (corpus, index, service name, replica counts): the Miles task
-reads the gateway's address from the same endpoint files (wait_for_services.py) and writes ``complete`` when training
-succeeds (tmax_beaker_entry.sh).
+``services_templates/<source id>.json`` holds those tasks for one sealed Prime-RL source, taken from an accepted
+Prime-RL submission rendered by that source (``derive``), with its run-specific values replaced by ``{PLACEHOLDERS}``.
+``service_tasks`` picks the template of the run's ``prime_rl_source`` and fills it with the values of the Prime-RL
+experiment's ``run.yaml`` (corpus, index, service name, replica counts): the Miles task reads the gateway's address from
+the same endpoint files (wait_for_services.py) and writes ``complete`` when training succeeds (tmax_beaker_entry.sh).
 
-    python examples/tmax_search/beaker/services.py derive <accepted beaker.json>   # regenerate the template
+    python examples/tmax_search/beaker/services.py derive <accepted beaker.json>   # template of that source
 """
 
 import json
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import yaml
 
-TEMPLATE = Path(__file__).with_name("services_template.json")
+TEMPLATES = Path(__file__).with_name("services_templates")
 SERVICE_TASKS = ("redis", "gateway", "terminal", "localsearch", "judge")
 
 
@@ -70,6 +70,17 @@ def derive(spec_path: str) -> dict:
     }
 
 
+def template_path(prime_rl_source: str) -> Path:
+    """The service template rendered by this sealed source (``.../prime-rl-sources/<id>/source``)."""
+    match = re.search(r"prime-rl-sources/([0-9a-f]{64})/source", prime_rl_source)
+    assert match, f"{prime_rl_source} is not a sealed Prime-RL source (.../prime-rl-sources/<id>/source)"
+    path = TEMPLATES / f"{match.group(1)}.json"
+    assert (
+        path.exists()
+    ), f"no service template for source {match.group(1)}: derive one from a submission of that source"
+    return path
+
+
 def service_tasks(
     *,
     prime_rl_source: str,
@@ -86,11 +97,7 @@ def service_tasks(
 
     ``replicas`` overrides the run.yaml's terminal / localsearch counts (smoke tests run few); ``context`` gives the
     tasks' ``priority`` and ``min_runtime``."""
-    template = json.loads(TEMPLATE.read_text())
-    assert f"prime-rl-sources/{template['derived_from']['prime_rl_source_id']}/source" in prime_rl_source, (
-        f"{TEMPLATE.name} was rendered by Prime-RL source {template['derived_from']['prime_rl_source_id']}, "
-        f"not {prime_rl_source}: regenerate it (derive) from a submission of that source"
-    )
+    template = json.loads(template_path(prime_rl_source).read_text())
     service = yaml.safe_load(Path(prime_rl_run_yaml).read_text())["service"]
     assert service.get("local_search_backend") == "quote_bm25_v1", "the template's search tasks are quote_bm25_v1"
     values = {
@@ -133,5 +140,7 @@ def service_tasks(
 if __name__ == "__main__":
     command, spec_path = sys.argv[1:3]
     assert command == "derive", __doc__
-    TEMPLATE.write_text(json.dumps(derive(spec_path), indent=1) + "\n")
-    print(f"wrote {TEMPLATE}")
+    derived = derive(spec_path)
+    path = TEMPLATES / f"{derived['derived_from']['prime_rl_source_id']}.json"
+    path.write_text(json.dumps(derived, indent=1) + "\n")
+    print(f"wrote {path}")

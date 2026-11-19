@@ -10,7 +10,7 @@ in every directory the port uses), at `/weka/oe-adapt-default/shashankg/miles_se
 the agent and reward import `literegistry_tool_client` and `search_agent.{protocol,tools,tool_metrics}` from it (the
 launcher puts them on `PYTHONPATH`), the launcher reads the experiment's `rl.toml`, prompt files and dataset from it,
 and the Beaker service tasks boot from it. Moving to a newer Prime-RL means a new sealed copy, `prime_rl_source` in the
-configs, and `beaker/services_template.json` regenerated from an accepted submission of that source:
+configs, and a `beaker/services_templates/<source id>.json` derived from an accepted submission of that source:
 
 ```bash
 python examples/tmax_search/beaker/services.py derive <prime-rl run>/submissions/<id>/beaker.json

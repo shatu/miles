@@ -30,7 +30,7 @@ from a pinned copy of the Prime-RL source, as do its search, terminal and judge 
 | `search_loss.py` | Prime-RL's `group_token_mean` loss aggregation through `--custom-convert-samples-to-train-data-path` |
 | `search_metrics.py` | Per-rollout W&B metrics: stop conditions, tool outcomes, judge outcomes, reward components, zero-variance groups |
 | `configs/` | Experiment configs: `smoke_search_4b.yaml` (4 GPUs, bf16 logits), its twin `smoke_search_4b_fp32_head.yaml`, that on the commit-named image `smoke_search_4b_fp32_head_imgd0831a475b.yaml`, and `prod_4node_search_4b.yaml` (Prime-RL's scale, 4 nodes) |
-| `beaker/services.py`, `beaker/services_template.json` | Prime-RL's service tasks (Redis, gateway, terminal, search, judge) for the Beaker experiment |
+| `beaker/services.py`, `beaker/services_templates/` | Prime-RL's service tasks (Redis, gateway, terminal, search, judge) for the Beaker experiment, one template per sealed Prime-RL source |
 | `beaker/wait_for_services.py` | The head waits for the services and finds their gateway |
 
 ## How it maps to Prime-RL
@@ -58,10 +58,11 @@ trainer's settings are the launcher's defaults:
 
 A config with a `beaker.search_services` section runs Prime-RL's own service tasks in the same Beaker experiment as
 the Miles task, as Prime-RL's coupled launcher does: Redis and the LiteRegistry gateway, terminal replicas and
-quote-BM25 search replicas on Jupiter CPUs, and the vLLM judge on one Holmes GPU. `beaker/services_template.json` is
-those tasks as rendered by the pinned Prime-RL source for an accepted submission, with the run-specific values as
-placeholders (regenerate it with `python examples/tmax_search/beaker/services.py derive <beaker.json>` when the pinned
-source changes). `submit.py` fills it with the experiment's `run.yaml` (corpus, index, service name, replica counts,
+quote-BM25 search replicas on Jupiter CPUs, and the vLLM judge on one Holmes GPU.
+`beaker/services_templates/<source id>.json` is those tasks as rendered by one sealed Prime-RL source for an accepted
+submission, with the run-specific values as placeholders (derive one with
+`python examples/tmax_search/beaker/services.py derive <beaker.json>` for each newly pinned source); the config's
+`prime_rl_source` picks it. `submit.py` fills it with the experiment's `run.yaml` (corpus, index, service name, replica counts,
 which `search_services.replicas` can override) and this run's state directory on `oe-adapt-default`.
 
 - **Discovery.** The services register in a head registry of endpoint files under
