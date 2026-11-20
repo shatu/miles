@@ -1,5 +1,6 @@
 """The TMax launcher's GPU layout with SGLang OPD teacher servers (run_tmax_qwen3_5.py)."""
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -35,6 +36,20 @@ def test_on_one_node_training_gets_what_rollout_and_the_teachers_leave():
 def test_colocated_training_with_an_sglang_teacher_is_one_node_only():
     with pytest.raises(AssertionError, match="fully async"):
         _args(num_nodes=2, opd_teacher_gpus=1)
+
+
+def test_the_teacher_server_actor_unpickles_where_its_module_is_not_importable(tmp_path):
+    """Ray workers do not have examples/tmax on their path: the actor class must travel by value."""
+    cloudpickle = pytest.importorskip("ray.cloudpickle")
+    opd_teachers.ship_by_value()
+    blob = cloudpickle.dumps(opd_teachers._TeacherServer)
+    load = (
+        "import pickle, sys; cls = pickle.loads(sys.stdin.buffer.read()); print(cls.__name__, hasattr(cls, 'start'))"
+    )
+    # -I: no PYTHONPATH, no script directory; the interpreter's site-packages (Ray) only.
+    done = subprocess.run([sys.executable, "-I", "-c", load], input=blob, capture_output=True, cwd=tmp_path)
+    assert done.returncode == 0, done.stderr.decode()[-2000:]
+    assert done.stdout.decode().split() == ["_TeacherServer", "True"]
 
 
 def test_teacher_servers_go_round_robin_over_the_rollout_nodes_last_first():

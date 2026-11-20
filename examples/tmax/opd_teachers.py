@@ -49,6 +49,7 @@ def start(
     placement = hosts(len(nodes), train_nodes, len(servers))
     run_dir = os.path.dirname(urls_file)
     os.makedirs(run_dir, exist_ok=True)
+    ship_by_value()
     server = ray.remote(num_gpus=1, num_cpus=1)(_TeacherServer)
     teachers: dict[str, list[str]] = {}
     logs = []
@@ -91,6 +92,16 @@ def start(
         for log in logs:
             print(f"==> {log}", Path(log).read_text()[-8000:], sep="\n", flush=True)
         raise RuntimeError(f"OPD teacher servers not healthy after 30 min: {sorted(pending)}")
+
+
+def ship_by_value() -> None:
+    """Have Ray pickle this module's actor class by value. By reference (Ray's default for an importable module), a
+    worker imports ``opd_teachers``, which only the launcher's path has: the actor failed with ModuleNotFoundError
+    (2026-11-20, smoke 01M7VA7ZBZ53AC8V9G3567G0QK). Defined in the launcher script (``__main__``), it shipped by value.
+    """
+    import ray.cloudpickle
+
+    ray.cloudpickle.register_pickle_by_value(sys.modules[__name__])
 
 
 def hosts(num_nodes: int, train_nodes: int, num_servers: int) -> list[int]:
