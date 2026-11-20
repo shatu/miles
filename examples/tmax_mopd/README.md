@@ -58,7 +58,7 @@ and the task rewards are computed and logged but not trained on.
 | Config | Layout | Use |
 |---|---|---|
 | `configs/smoke_mopd_4b.yaml` | 1 Holmes node: 1 training GPU, 1 rollout engine and 2 teacher GPUs, plus the judge's GPU; 3 steps of 4 x 4 on bc-rl-1131 | smoke (passed) |
-| `configs/prod_4node_mopd_4b.yaml` | 4 Holmes nodes: 16 training GPUs, 13 rollout engines, 1 terminal and 2 search teacher GPUs; 8 x 32 per step on bc-rl-v1-1, 500 steps | production |
+| `configs/prod_3node_mopd_4b.yaml` | 3 Holmes nodes: 8 training GPUs, 13 rollout engines, 1 terminal and 2 search teacher GPUs; 8 x 32 per step on bc-rl-v1-1, 500 steps | production |
 
 ```bash
 python examples/tmax/beaker/submit.py examples/tmax_mopd/configs/smoke_mopd_4b.yaml

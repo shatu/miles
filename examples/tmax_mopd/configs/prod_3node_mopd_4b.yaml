@@ -3,14 +3,15 @@
 # the 14.6k TMax tasks and that teacher's own environment: Prime-RL's bc-rl-v1-1 (1,215 questions, each repeated 12
 # times, on the corpus with Hugging Face pages) from the source its run pinned, so its logged search reward compares
 # with that run's (0.52 over its first 40 steps, 0.76 over steps 240-279). Pure OPD, 8 prompts x 32 rollouts per step.
-# 2 training nodes (TP 1 x DP 16, 128k tokens per GPU for the 128k search episodes); the rollout nodes' 16 GPUs split
-# into 13 engines, 1 terminal teacher server and 2 search teacher servers: search samples are mostly tool output, which
-# the teacher scores, so its share of the scoring is about 60% (smoke_mopd_4b: ~40k tokens per search sample, ~23k per
+# 1 training node: TP 1 x DP 8, 128k tokens per GPU for the 128k search episodes, about 2 min of training per step
+# against the 4-7 min per step of the 4B terminal runs' rollouts, so rollout limits the step rate. The 2 rollout nodes'
+# 16 GPUs: 13 engines, 1 terminal and 2 search teacher servers. Search samples are mostly tool output, which the teacher
+# scores, so the search teacher does about 60% of the scoring (smoke_mopd_4b: ~40k tokens per search sample, ~23k per
 # terminal one). The terminal sandboxes on the jupiter128 podman fleet, the search services (the judge on a Holmes GPU,
 # 32 search + 32 terminal replicas on Jupiter CPUs) as tasks of the experiment. Validated at smoke size by
 # smoke_mopd_4b.yaml (bc-rl-1131, one server per teacher).
-#   python examples/tmax/beaker/submit.py examples/tmax_mopd/configs/prod_4node_mopd_4b.yaml
-exp_name: mopd_prod4node_4b
+#   python examples/tmax/beaker/submit.py examples/tmax_mopd/configs/prod_3node_mopd_4b.yaml
+exp_name: mopd_prod3node_4b
 model_name: Qwen3.5-4B-tmax-template          # hamishivi/Qwen3.5-4B
 terminal_teacher: tmax-4b                     # allenai/tmax-4b
 search_teacher: search-4b-bcrl-v11-step279    # search_prod4node_4b_bcrl_v11_high8h, HF snapshot step_279
@@ -18,7 +19,7 @@ search_fraction: 0.5
 sandbox_backend: gateway                      # terminal containers on the fleet behind beaker.gateway_registry
 prime_rl_source: /weka/oe-adapt-default/shashankg/miles_search/prime-rl-sources/a5fcb924645d9bd8f326efd5087c8de6447c83fe17c6d07c36e99ee736d30a37/source
 prime_rl_config: configs/experiments/search-agent-bc-rl-v1-1-fp32-lr5e-7/rl.toml
-num_nodes: 4
+num_nodes: 3
 num_gpus_per_node: 8
 async_rollout_gpus: 13                        # the last 2 nodes' 16 GPUs, less the 3 teacher servers'
 terminal_teacher_gpus: 1
@@ -47,7 +48,7 @@ beaker:
   priority: high                              # as the search prod run; with an 8 h minimum runtime
   min_runtime: 8h
   retries: 10
-  nodes: 4
+  nodes: 3
   gpus: 8
   shared_memory: 512GiB
   image: beaker:shashankg/tmax-miles-train-d0831a475b  # smoke: smoke_mopd_4b.yaml
