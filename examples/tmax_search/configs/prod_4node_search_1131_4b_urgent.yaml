@@ -1,0 +1,52 @@
+# prod_4node_search_1131_4b.yaml at urgent priority for every task (Miles, judge, services), to continue
+# search_prod4node_1131_4b_20261120_001650 from its last checkpoint. Its first experiment (01M7V50G80RJMMPKHX9151276C)
+# lost the judge at 04:57 UTC on 2026-11-20 after step 46 to an immediate-priority job on Holmes despite the 8 h
+# minimum runtime, and Beaker re-created every task but the judge.
+#   python examples/tmax/beaker/submit.py examples/tmax_search/configs/prod_4node_search_1131_4b_urgent.yaml \
+#       --exp-name search_prod4node_1131_4b_20261120_001650 --name <new Beaker name>
+exp_name: search_prod4node_1131_4b
+model_name: Qwen3.5-4B-tmax-template          # hamishivi/Qwen3.5-4B
+prime_rl_source: /weka/oe-adapt-default/shashankg/miles_search/prime-rl-sources/ebe1abbae42ec6587ff36647fca2b007583abd4501e45e0be15a37a3e1495160/source
+prime_rl_config: configs/experiments/search-agent-bc-rl-1131-fp32-lr5e-7/rl.toml
+num_nodes: 4
+num_gpus_per_node: 8
+async_rollout_gpus: 16
+rollout_batch_size: 8
+n_samples_per_prompt: 32
+num_rollout: 200
+async_max_concurrent_samples: 512
+max_seq_len: 131072
+rollout_max_response_len: 32768
+tensor_model_parallel_size: 1
+context_parallel_size: 1
+max_tokens_per_gpu: 131072
+optimizer_cpu_offload: false
+fp32_lm_head: true
+save_interval: 10
+hf_snapshot_every: 20
+extra_args: "--log-probs-backend fused --distributed-timeout-minutes 120 --sglang-watchdog-timeout 1800"
+model_dir: /weka/nora-default/shashankg/miles_tmax_v2/models
+data_dir: /weka/nora-default/shashankg/miles_tmax_v2/datasets
+output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+dump_training_data: true
+wandb_project: oe-general-agents
+wandb_entity: ai2-llm
+
+beaker:
+  launcher: examples/tmax_search/run_search_qwen3_5.py
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: urgent
+  min_runtime: 8h
+  retries: 10
+  nodes: 4
+  gpus: 8
+  shared_memory: 512GiB
+  image: beaker:shashankg/tmax-miles-train-d0831a475b  # smoke: smoke_search_1131_4b.yaml
+  keep_last_n_checkpoints: 3                  # Prime-RL's ckpt keep_last 3
+  env:
+    NCCL_DEBUG: WARN
+    MILES_SESSION_REQUEST_TIMEOUT_S: 600         # collect samples: wait up to 10 min instead of 2
+  search_services: {}                         # Prime-RL's services at its run.yaml's counts
