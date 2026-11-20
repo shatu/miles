@@ -56,10 +56,12 @@ def test_a_teacher_must_render_as_the_student():
         launcher.ScriptArgs(terminal_teacher="tmax-2b")  # the 2B checkpoints render without thinking
 
 
-def test_the_terminal_and_search_sides_keep_their_launchers_defaults():
+def test_the_terminal_side_keeps_its_launchers_defaults_and_search_the_teachers_environment():
     args = launcher.ScriptArgs()
     assert args.terminal.max_steps == launcher.tmax_launcher.ScriptArgs.max_steps
-    assert args.search.prime_rl_config == launcher.search_launcher.ScriptArgs.prime_rl_config
+    # The default search teacher (search_prod4node_4b_bcrl_v11_high8h) trained on bc-rl-v1-1 from this source.
+    assert args.search.prime_rl_config == "configs/experiments/search-agent-bc-rl-v1-1-fp32-lr5e-7/rl.toml"
+    assert "a5fcb924645d9bd8f326efd5087c8de6447c83fe17c6d07c36e99ee736d30a37" in args.search.prime_rl_source
     assert args.start_failure == "drop", "the TMax OPD runs': a fleet failure drops the group"
 
 

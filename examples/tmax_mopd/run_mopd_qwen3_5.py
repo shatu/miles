@@ -40,8 +40,9 @@ Args:
   Terminal sandboxes (as run_tmax_qwen3_5.py, with its defaults): --sandbox-backend, --terminal-gateway-url,
       --docker-host, --max-steps, --sandbox-start-concurrency, --sandbox-exec-concurrency, --sandboxes-per-node,
       --start-failure, --episode-timeout-s, --tool-call-timeout-s.
-  Search environment (as run_search_qwen3_5.py, with its defaults): --prime-rl-source, --prime-rl-config,
-      --prime-rl-checkout, --prime-rl-weka-mount, --search-gateway-url.
+  Search environment (as run_search_qwen3_5.py): --prime-rl-source, --prime-rl-config (default: the default search
+      teacher's own, bc-rl-v1-1 from the source its run pinned), --prime-rl-checkout, --prime-rl-weka-mount,
+      --search-gateway-url.
   --trace-dir: episode traces under <trace-dir>/<exp-name>/{terminal,search} (default: off).
   The rest as run_tmax_qwen3_5.py.
 
@@ -106,13 +107,19 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     start_failure: Literal["zero", "drop"] = "drop"  # the OPD runs': the fleet's failure is not the policy's
     episode_timeout_s: int = _TMAX.episode_timeout_s
     tool_call_timeout_s: int = _TMAX.tool_call_timeout_s
-    # Search environment, as run_search_qwen3_5.py
-    prime_rl_source: str = _SEARCH.prime_rl_source
-    prime_rl_config: str = _SEARCH.prime_rl_config
+    # Search environment, as run_search_qwen3_5.py. By default the default search teacher's own: Prime-RL's bc-rl-v1-1
+    # (1,215 questions, the corpus with Hugging Face pages) from the source search_prod4node_4b_bcrl_v11_high8h pinned,
+    # so the teacher scores episodes from the environment it was trained in.
+    prime_rl_source: str = (
+        "/weka/oe-adapt-default/shashankg/miles_search/prime-rl-sources/"
+        "a5fcb924645d9bd8f326efd5087c8de6447c83fe17c6d07c36e99ee736d30a37/source"
+    )
+    prime_rl_config: str = "configs/experiments/search-agent-bc-rl-v1-1-fp32-lr5e-7/rl.toml"
     prime_rl_checkout: str = _SEARCH.prime_rl_checkout
     prime_rl_weka_mount: str = _SEARCH.prime_rl_weka_mount
     search_gateway_url: str = ""  # empty inherits SEARCH_GATEWAY_URL
-    # Training, as the TMax OPD runs (prod_4node_gateway_opd_9b_to_4b.yaml)
+    # Training: the TMax OPD runs' optimizer and loss settings (prod_4node_gateway_opd_9b_to_4b.yaml's), not their
+    # teachers: both teachers here are 4B.
     num_gpus_per_node: int = 8
     rollout_batch_size: int = 8
     n_samples_per_prompt: int = 32
