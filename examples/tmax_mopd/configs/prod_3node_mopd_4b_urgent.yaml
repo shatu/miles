@@ -1,10 +1,11 @@
-# prod_3node_mopd_4b.yaml with the search judge at priority urgent. That config's first submission
-# (01M7VJDZ5AG2X0PHKFDEZ2JC5T, 2026-11-20) lost its judge (1 Holmes GPU, priority high) to an immediate-priority job
-# 45 min in. The judge is a critical service, so preemption propagation restarted the experiment, but Beaker did not
-# resume the preempted judge itself, leaving the training replicas to wait for it. The run was stopped and resubmitted
-# with this config.
-#   python examples/tmax/beaker/submit.py examples/tmax_mopd/configs/prod_3node_mopd_4b_judge_urgent.yaml
-exp_name: mopd_prod3node_4b_judgeurgent
+# prod_3node_mopd_4b.yaml with every task at priority urgent (the user's call): the training replicas, the judge
+# and the CPU services. That config's first submission (01M7VJDZ5AG2X0PHKFDEZ2JC5T, 2026-11-20, priority high) lost its
+# judge (1 Holmes GPU) to an immediate-priority job 45 min in. The judge is a critical service, so preemption
+# propagation restarted the experiment, but Beaker did not resume the preempted judge itself, leaving the training
+# replicas waiting for it. The run was stopped and resubmitted with this config. Immediate-priority work can still
+# preempt any task, which restarts the run from its last checkpoint.
+#   python examples/tmax/beaker/submit.py examples/tmax_mopd/configs/prod_3node_mopd_4b_urgent.yaml
+exp_name: mopd_prod3node_4b_urgent
 model_name: Qwen3.5-4B-tmax-template          # hamishivi/Qwen3.5-4B
 terminal_teacher: tmax-4b                     # allenai/tmax-4b
 search_teacher: search-4b-bcrl-v11-step279    # search_prod4node_4b_bcrl_v11_high8h, HF snapshot step_279
@@ -38,7 +39,7 @@ beaker:
   cluster: ai2/holmes
   workspace: ai2/oe-agents-holmes
   budget: ai2/oe-omai
-  priority: high                              # as the search prod run; with an 8 h minimum runtime
+  priority: urgent                            # every task, the services and the judge included
   min_runtime: 8h
   retries: 10
   nodes: 3
@@ -53,6 +54,4 @@ beaker:
   env:
     NCCL_DEBUG: WARN
     MILES_SESSION_REQUEST_TIMEOUT_S: 600         # collect samples: wait up to 10 min instead of 2 (search's 128k)
-  search_services:                            # Prime-RL's services at its run.yaml's counts
-    priority: {judge: urgent}                 # the judge's Holmes GPU above the run's high; immediate work can still
-                                              # preempt it, which restarts the run from its last checkpoint
+  search_services: {}                         # Prime-RL's services at its run.yaml's counts
