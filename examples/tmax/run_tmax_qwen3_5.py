@@ -133,6 +133,7 @@ MODEL_NAMES = Literal[
     "tmax-9b",
     "tmax-27b",
     "tmax-opd-9b-step80",
+    "search-4b-bcrl-v11-step279",
 ]
 
 
@@ -164,6 +165,15 @@ RECIPES: dict[str, _Recipe] = {
         "/weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles/"
         "tmax_prod4node_gateway_opd_9b_20261027_022952/checkpoints/hf/step_79",
         "qwen3.5-9B",
+        enable_thinking=True,
+    ),
+    # The search agent's teacher for multi-teacher OPD (examples/tmax_mopd): step 280 of the search port's run of
+    # Prime-RL's bc-rl-v1-1 recipe on hamishivi/Qwen3.5-4B (search_prod4node_4b_bcrl_v11_high8h, examples/tmax_search),
+    # its HF snapshot with hamishivi/Qwen3.5-4B's chat template; language-model weights only.
+    "search-4b-bcrl-v11-step279": _Recipe(
+        "/weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles/"
+        "search_prod4node_4b_bcrl_v11_high8h_20261112_203111/checkpoints/hf_eval/step_279",
+        "qwen3.5-4B",
         enable_thinking=True,
     ),
 }
