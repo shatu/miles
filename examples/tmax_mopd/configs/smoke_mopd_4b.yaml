@@ -1,7 +1,7 @@
 # 4-GPU Holmes smoke of multi-teacher OPD into hamishivi/Qwen3.5-4B: allenai/tmax-4b teaches the terminal episodes and the
 # search port's 4B run at step 280 the search episodes, on a 50/50 mix of TMax tasks and the bc-rl-1131 search
 # questions. One node: 1 training GPU, 1 rollout engine and one SGLang server per teacher; the terminal sandboxes on
-# the private podman fleet (a gateway on the head), the search services as tasks of the experiment (the judge on its
+# the jupiter128 podman fleet (a gateway on the head), the search services as tasks of the experiment (the judge on its
 # own Holmes GPU, 2 search + 2 terminal replicas). 3 steps of 4 prompts x 4 rollouts at each domain's full budget
 # (terminal 64k, search 128k), so a step almost surely holds both domains.
 #   python examples/tmax/beaker/submit.py examples/tmax_mopd/configs/smoke_mopd_4b.yaml
@@ -39,8 +39,9 @@ beaker:
   gpus: 4
   shared_memory: 256GiB
   image: beaker:shashankg/tmax-miles-train-d0831a475b
-  # The private fleet's head registry: the head starts a gateway from it (weka bucket oe-adapt-default is mounted).
-  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-private-reasoning-20261017.sqlite3
+  # The jupiter128 fleet's head registry: the head starts a gateway from it (weka bucket oe-adapt-default is
+  # mounted). The private fleet this recipe's OPD runs used has been down since 2026-11-05.
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-jupiter128-20261105.sqlite3
   env:
     MILES_SESSION_REQUEST_TIMEOUT_S: 600         # collect samples: wait up to 10 min instead of 2 (search's 128k)
   # Prime-RL's search services as tasks of this experiment (examples/tmax_search/beaker/services.py), fewer replicas.
