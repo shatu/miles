@@ -30,8 +30,10 @@ A config of another launcher names it with ``launcher`` (default examples/tmax/r
 (examples/tmax_search) has a ``search_services`` section: the experiment then also runs Prime-RL's search services
 (examples/tmax_search/beaker/services.py), and the Miles task waits for them and stops them when training succeeds;
 its sandboxes are the config's sandbox_backend if it sets one (the multi-teacher OPD recipe, examples/tmax_mopd, runs
-terminal sandboxes on a fleet too), else none. Its keys: replicas (terminal / localsearch counts, default the Prime-RL run.yaml's), run_root (where each run's
-service state lives, on oe-adapt-default), hf_token_secret, nvme_cache_dir.
+terminal sandboxes on a fleet too), else none. Its keys: replicas (terminal / localsearch counts, default the
+Prime-RL run.yaml's), priority (a Beaker priority for some service tasks by name, e.g. ``{judge: urgent}``; default
+the Miles task's), run_root (where each run's service state lives, on oe-adapt-default), hf_token_secret,
+nvme_cache_dir.
 """
 
 import argparse
@@ -281,7 +283,11 @@ def _search_services(config: dict, exp_name: str, *, create_dirs: bool) -> dict:
         state_dir=service_view(state_dir),
         identity=f"{user}-{exp_name}".replace("_", "-").lower(),
         hf_token_secret=section.get("hf_token_secret", f"{user}_HF_TOKEN"),
-        context={"priority": beaker.get("priority", "normal"), "min_runtime": beaker.get("min_runtime") or "0h"},
+        context={
+            "priority": beaker.get("priority", "normal"),
+            "min_runtime": beaker.get("min_runtime") or "0h",
+            "task_priority": section.get("priority") or {},
+        },
         replicas=section.get("replicas") or {},
         nvme_cache_dir=section.get("nvme_cache_dir", f"/nvme/{user}/prime-rl/retrieval"),
     )
