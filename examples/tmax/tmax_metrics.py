@@ -48,29 +48,35 @@ _MEAN_KEYS = (
 
 def nonzero_std_filter(args, samples, **kwargs) -> FilterOutput:
     """Miles's zero-variance filter, after recording the group (open-instruct's --active_sampling)."""
-    _record_group(args, samples)
+    record_group(args, samples)
     return apply_reward_nonzero_std_filter(args, samples, **kwargs)
 
 
 def missing_reward_filter(args, samples, **kwargs) -> FilterOutput:
     """Miles's missing-reward filter alone, after recording the group (filter_zero_std off, as in smoke tests): a
     group with a sample the sandbox failed to score (reward None) is dropped rather than trained on a false 0."""
-    _record_group(args, samples)
+    record_group(args, samples)
     return apply_missing_reward_filter(args, samples, **kwargs)
 
 
 def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time) -> bool:
-    solve_rates, episodes = _drain()
-    if not episodes:  # the filter hooks are not installed: describe the trained episodes instead
-        episodes = [s.metadata["agent_metrics"] for s in samples if (s.metadata or {}).get("agent_metrics")]
-    metrics = _agent_metrics(episodes) | unfiltered_metrics(solve_rates) | trained_metrics(args, rollout_id, samples)
+    metrics = rollout_metrics(args, rollout_id, samples)
     if metrics:
         metrics["rollout/step"] = compute_rollout_step(args, rollout_id)
         tracking.log(args, metrics, step_key="rollout/step")
     return False
 
 
-def _record_group(args, samples) -> None:
+def rollout_metrics(args, rollout_id: int, samples: list[Sample]) -> dict[str, float]:
+    """What log_rollout_data logs: the groups recorded since the last call, and the trained samples."""
+    solve_rates, episodes = _drain()
+    if not episodes:  # the filter hooks are not installed: describe the trained episodes instead
+        episodes = [s.metadata["agent_metrics"] for s in samples if (s.metadata or {}).get("agent_metrics")]
+    return _agent_metrics(episodes) | unfiltered_metrics(solve_rates) | trained_metrics(args, rollout_id, samples)
+
+
+def record_group(args, samples) -> None:
+    """Record a finished group for the next rollout_metrics call (the filter hooks do, before they filter)."""
     rewards = [_reward(args, s) for s in iter_samples(samples)]
     rewards = [r for r in rewards if r is not None]
     episodes = [s.metadata["agent_metrics"] for s in iter_samples(samples) if (s.metadata or {}).get("agent_metrics")]

@@ -57,6 +57,6 @@ def test_a_hub_recipe_is_downloaded_and_a_local_checkpoint_copied_once():
 
 
 def test_the_opd_checkpoint_recipe_is_a_local_qwen35_9b():
-    recipe = launcher._RECIPES["tmax-opd-9b-step80"]
+    recipe = launcher.RECIPES["tmax-opd-9b-step80"]
     assert recipe.hf_repo.startswith("/") and recipe.hf_repo.endswith("/hf/step_79")
     assert recipe.megatron_model_type == "qwen3.5-9B" and recipe.enable_thinking

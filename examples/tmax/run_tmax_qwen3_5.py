@@ -29,8 +29,8 @@ the training job.
 =====================
 
 Args:
-  --model-name: student, a key of _RECIPES (default: Qwen3.5-9B).
-  --opd-teacher: teacher, a key of _RECIPES (default: none, no OPD).
+  --model-name: student, a key of RECIPES (default: Qwen3.5-9B).
+  --opd-teacher: teacher, a key of RECIPES (default: none, no OPD).
   --opd-teacher-mode: megatron (in the trainer; same architecture only), sglang (--opd-teacher-gpus SGLang servers of
       one GPU each, on the last nodes, the rollout side), or auto: megatron when the architectures match (default).
   --opd-kl-coef: weight of the per-token reverse-KL penalty (default: 1.0).
@@ -123,7 +123,7 @@ from miles.utils.external_utils import command_utils
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _DATASET = "allenai/tmax-15k-open-instruct"
 
-_MODEL_NAMES = Literal[
+MODEL_NAMES = Literal[
     "Qwen3.5-9B",
     "Qwen3.5-9B-tmax-template",
     "Qwen3.5-4B-tmax-template",
@@ -147,7 +147,7 @@ class _Recipe:
     enable_thinking: bool
 
 
-_RECIPES: dict[str, _Recipe] = {
+RECIPES: dict[str, _Recipe] = {
     "Qwen3.5-9B": _Recipe("Qwen/Qwen3.5-9B", "qwen3.5-9B", enable_thinking=True),
     # open-instruct's production TMax student
     "Qwen3.5-9B-tmax-template": _Recipe("hamishivi/Qwen3.5-9B", "qwen3.5-9B", enable_thinking=True),
@@ -174,8 +174,8 @@ app = typer.Typer()
 @dataclass
 class ScriptArgs(command_utils.ExecuteTrainConfig):
     run_id: str = command_utils.create_run_id()
-    model_name: _MODEL_NAMES = "Qwen3.5-9B"
-    opd_teacher: _MODEL_NAMES | None = None
+    model_name: MODEL_NAMES = "Qwen3.5-9B"
+    opd_teacher: MODEL_NAMES | None = None
     opd_kl_coef: float = 1.0
     # open-instruct's --opd_pure: the advantage is the OPD term alone; the task reward is logged, not trained on.
     opd_pure: bool = False
@@ -261,7 +261,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
             f"({self.save_interval}): HF snapshots are written at saves"
         )
         if self.opd_teacher is not None:
-            student, teacher = _RECIPES[self.model_name], _RECIPES[self.opd_teacher]
+            student, teacher = RECIPES[self.model_name], RECIPES[self.opd_teacher]
             assert self.opd_mode == "sglang" or student.megatron_model_type == teacher.megatron_model_type, (
                 f"Megatron-mode OPD needs one architecture: {self.model_name} is {student.megatron_model_type}, "
                 f"{self.opd_teacher} is {teacher.megatron_model_type}"
@@ -286,7 +286,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 
     @property
     def recipe(self) -> _Recipe:
-        return _RECIPES[self.model_name]
+        return RECIPES[self.model_name]
 
     @property
     def opd_mode(self) -> Literal["megatron", "sglang"] | None:
@@ -295,7 +295,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
         if self.opd_teacher_mode != "auto":
             return self.opd_teacher_mode
         same_architecture = (
-            _RECIPES[self.model_name].megatron_model_type == _RECIPES[self.opd_teacher].megatron_model_type
+            RECIPES[self.model_name].megatron_model_type == RECIPES[self.opd_teacher].megatron_model_type
         )
         return "megatron" if same_architecture else "sglang"
 
@@ -349,6 +349,27 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     def trace_run_dir(self) -> str:
         return f"{self.trace_dir}/{self.exp_name or self.run_id}" if self.trace_dir else ""
 
+    def agent_env(self, *, trace_dir: str) -> dict[str, str]:
+        """The episode loop's and the sandboxes' settings, which the rollout process reads from its environment
+        (tmax_agent_function, tmax_sandbox); episode traces go to ``trace_dir`` (empty: none)."""
+        assert (
+            self.sandbox_backend != "gateway" or self.sandbox_gateway_url
+        ), "--sandbox-backend gateway needs --gateway-url or TMAX_GATEWAY_URL"
+        return {
+            "TMAX_TASK_DATA_DIR": self.task_data_dir,
+            "TMAX_SANDBOX_BACKEND": self.sandbox_backend,
+            "TMAX_GATEWAY_URL": self.sandbox_gateway_url,
+            "TMAX_DOCKER_HOST": self.sandbox_docker_host,
+            "TMAX_MAX_STEPS": str(self.max_steps),
+            "TMAX_START_CONCURRENCY": str(self.sandbox_start_concurrency),
+            "TMAX_EXEC_CONCURRENCY": str(self.sandbox_exec_concurrency),
+            "TMAX_SANDBOXES_PER_NODE": str(self.sandboxes_per_node),
+            "TMAX_START_FAILURE": self.start_failure,
+            "TMAX_EPISODE_TIMEOUT_S": str(self.episode_timeout_s),
+            "TMAX_TOOL_CALL_TIMEOUT_S": str(self.tool_call_timeout_s),
+            "TMAX_TRACE_DIR": trace_dir,
+        }
+
     @property
     def dataset_dir(self) -> str:
         return f"{self.data_dir}/{_DATASET.split('/')[1]}"
@@ -367,16 +388,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 @command_utils.dataclass_cli
 def prepare(args: ScriptArgs):
     U = args.create_backend()
-    U.hf_download_dataset(_DATASET, data_dir=args.data_dir)
-    if not Path(args.task_data_dir).exists():
-        U.exec_command_cpu(
-            f"mkdir -p {args.task_data_dir}.tmp && "
-            f"tar -xzf {args.dataset_dir}/task-data.tar.gz -C {args.task_data_dir}.tmp && "
-            f"mv {args.task_data_dir}.tmp {args.task_data_dir}"
-        )
-    _write_prompt_data(args)
+    prepare_tasks(U, args)
     for name in filter(None, [args.model_name, args.opd_teacher]):
-        recipe = _RECIPES[name]
+        recipe = RECIPES[name]
         U.exec_command_cpu(fetch_command(recipe.hf_repo, f"{args.model_dir}/{name}"))
         if name == args.opd_teacher and args.opd_mode == "sglang":
             continue  # SGLang serves the HF checkpoint
@@ -388,6 +402,19 @@ def prepare(args: ScriptArgs):
             hf_checkpoint=f"{args.model_dir}/{name}",
             megatron_path=args.megatron_path,
         )
+
+
+def prepare_tasks(U, args: ScriptArgs) -> None:
+    """Download the dataset, extract the task directories (tmax_agent_function's TMAX_TASK_DATA_DIR) and write the
+    prompt JSONL (args.prompt_data). ``U`` is the launcher's backend (args.create_backend())."""
+    U.hf_download_dataset(_DATASET, data_dir=args.data_dir)
+    if not Path(args.task_data_dir).exists():
+        U.exec_command_cpu(
+            f"mkdir -p {args.task_data_dir}.tmp && "
+            f"tar -xzf {args.dataset_dir}/task-data.tar.gz -C {args.task_data_dir}.tmp && "
+            f"mv {args.task_data_dir}.tmp {args.task_data_dir}"
+        )
+    _write_prompt_data(args)
 
 
 def _write_prompt_data(args: ScriptArgs) -> None:
@@ -409,9 +436,7 @@ def _write_prompt_data(args: ScriptArgs) -> None:
 @command_utils.dataclass_cli
 def execute(args: ScriptArgs):
     U = args.create_backend()
-    assert (
-        args.sandbox_backend != "gateway" or args.sandbox_gateway_url
-    ), "--sandbox-backend gateway needs --gateway-url or TMAX_GATEWAY_URL"
+    agent_env = args.agent_env(trace_dir=args.trace_run_dir)
     ckpt_args = (
         f"--hf-checkpoint {args.model_dir}/{args.model_name} "
         f"--ref-load {args.model_dir}/{args.model_name}_torch_dist "
@@ -592,18 +617,7 @@ def execute(args: ScriptArgs):
         train_script="train_async.py" if args.fully_async else "train.py",
         extra_env_vars={
             "PYTHONPATH": f"{args.megatron_path}:{_SCRIPT_DIR}:{command_utils.repo_base_dir}",
-            "TMAX_TASK_DATA_DIR": args.task_data_dir,
-            "TMAX_SANDBOX_BACKEND": args.sandbox_backend,
-            "TMAX_GATEWAY_URL": args.sandbox_gateway_url,
-            "TMAX_DOCKER_HOST": args.sandbox_docker_host,
-            "TMAX_MAX_STEPS": str(args.max_steps),
-            "TMAX_START_CONCURRENCY": str(args.sandbox_start_concurrency),
-            "TMAX_EXEC_CONCURRENCY": str(args.sandbox_exec_concurrency),
-            "TMAX_SANDBOXES_PER_NODE": str(args.sandboxes_per_node),
-            "TMAX_START_FAILURE": args.start_failure,
-            "TMAX_EPISODE_TIMEOUT_S": str(args.episode_timeout_s),
-            "TMAX_TOOL_CALL_TIMEOUT_S": str(args.tool_call_timeout_s),
-            "TMAX_TRACE_DIR": args.trace_run_dir,
+            **agent_env,
             # read by generate.generate_with_teacher, in the rollout process
             **(
                 {

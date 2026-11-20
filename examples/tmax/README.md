@@ -411,7 +411,7 @@ For the 2B pair (`smoke_opd_2b.yaml`, not yet run on Beaker), scoring `hamishivi
 - **Thinking.** `allenai/tmax-4b`, `allenai/tmax-9b`, `hamishivi/Qwen3.5-4B`/`-9B` and stock Qwen3.5-4B and up
   all open `<think>` by default, as does Miles' `qwen35` template, and open-instruct trained with that default.
   The 2B checkpoints default to thinking off: `allenai/tmax-2b` and `hamishivi/Qwen3.5-2B` ship stock
-  Qwen3.5-2B's template byte for byte, whose generation prompt closes an empty think block. Each `_RECIPES` entry
+  Qwen3.5-2B's template byte for byte, whose generation prompt closes an empty think block. Each `RECIPES` entry
   follows its checkpoint's default. (The 4B OPD runs in the results below predate this and rendered with
   `enable_thinking=false`.) SGLang's Qwen3.5 reasoning
   detector treats `<tool_call>` as an implicit end of reasoning, so turns parse either way. vLLM's `qwen3`
