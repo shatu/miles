@@ -1,0 +1,57 @@
+# prod_3node_mopd_4b.yaml with every task at priority urgent (the user's call): the training replicas, the judge
+# and the CPU services. That config's first submission (01M7VJDZ5AG2X0PHKFDEZ2JC5T, 2026-11-20, priority high) lost its
+# judge (1 Holmes GPU) to an immediate-priority job 45 min in. The judge is a critical service, so preemption
+# propagation restarted the experiment, but Beaker did not resume the preempted judge itself, leaving the training
+# replicas waiting for it. The run was stopped and resubmitted with this config. Immediate-priority work can still
+# preempt any task, which restarts the run from its last checkpoint.
+#   python examples/tmax/beaker/submit.py examples/tmax_mopd/configs/prod_3node_mopd_4b_urgent.yaml
+exp_name: mopd_prod3node_4b_urgent
+model_name: Qwen3.5-4B-tmax-template          # hamishivi/Qwen3.5-4B
+terminal_teacher: tmax-4b                     # allenai/tmax-4b
+search_teacher: search-4b-bcrl-v11-step279    # search_prod4node_4b_bcrl_v11_high8h, HF snapshot step_279
+search_fraction: 0.5
+sandbox_backend: gateway                      # terminal containers on the fleet behind beaker.gateway_registry
+prime_rl_source: /weka/oe-adapt-default/shashankg/miles_search/prime-rl-sources/a5fcb924645d9bd8f326efd5087c8de6447c83fe17c6d07c36e99ee736d30a37/source
+prime_rl_config: configs/experiments/search-agent-bc-rl-v1-1-fp32-lr5e-7/rl.toml
+num_nodes: 3
+num_gpus_per_node: 8
+async_rollout_gpus: 13                        # the last 2 nodes' 16 GPUs, less the 3 teacher servers'
+terminal_teacher_gpus: 1
+search_teacher_gpus: 2
+rollout_batch_size: 8
+n_samples_per_prompt: 32
+num_rollout: 500
+async_max_concurrent_samples: 512             # 2 batches in flight
+sandbox_start_concurrency: 64                 # concurrent container starts on the fleet, rollout-wide
+save_interval: 10
+hf_snapshot_every: 20
+extra_args: "--log-probs-backend fused --distributed-timeout-minutes 120 --sglang-watchdog-timeout 1800"
+model_dir: /weka/nora-default/shashankg/miles_tmax_v2/models
+data_dir: /weka/nora-default/shashankg/miles_tmax_v2/datasets
+output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+dump_training_data: true
+wandb_project: oe-general-agents
+wandb_entity: ai2-llm
+
+beaker:
+  launcher: examples/tmax_mopd/run_mopd_qwen3_5.py
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: urgent                            # every task, the services and the judge included
+  min_runtime: 8h
+  retries: 10
+  nodes: 3
+  gpus: 8
+  shared_memory: 512GiB
+  image: beaker:shashankg/tmax-miles-train-d0831a475b  # smoke: smoke_mopd_4b.yaml
+  keep_last_n_checkpoints: 3
+  # The jupiter128 fleet's head registry (the private fleet has been down since 2026-11-05); at most 256 terminal
+  # episodes run at once (half of 512 in flight).
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-jupiter128-20261105.sqlite3
+  gateway_min_replicas: 32
+  env:
+    NCCL_DEBUG: WARN
+    MILES_SESSION_REQUEST_TIMEOUT_S: 600         # collect samples: wait up to 10 min instead of 2 (search's 128k)
+  search_services: {}                         # Prime-RL's services at its run.yaml's counts

@@ -205,7 +205,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 @command_utils.dataclass_cli
 def prepare(args: ScriptArgs):
     U = args.create_backend()
-    _write_prompt_data(args)
+    write_prompt_data(args)
     U.exec_command_cpu(fetch_command(args.recipe.hf_repo, f"{args.model_dir}/{args.model_name}"))
     U.convert_checkpoint(
         model_name=args.model_name,
@@ -217,7 +217,7 @@ def prepare(args: ScriptArgs):
     )
 
 
-def _write_prompt_data(args: ScriptArgs) -> None:
+def write_prompt_data(args: ScriptArgs) -> None:
     """One JSONL row per question: the experiment's prompt template rendered with it (search_agent/data.py), plus
     the id, question and answer the judge needs. The dataset is checked against the experiment's manifest."""
     env = resolve_env_args(

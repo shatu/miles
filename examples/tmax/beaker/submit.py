@@ -28,9 +28,12 @@ or gateway_url (a running gateway), gateway_min_replicas, literegistry_version, 
 
 A config of another launcher names it with ``launcher`` (default examples/tmax/run_tmax_qwen3_5.py). A search config
 (examples/tmax_search) has a ``search_services`` section: the experiment then also runs Prime-RL's search services
-(examples/tmax_search/beaker/services.py), and the Miles task waits for them and stops them when training succeeds.
-Its keys: replicas (terminal / localsearch counts, default the Prime-RL run.yaml's), run_root (where each run's
-service state lives, on oe-adapt-default), hf_token_secret, nvme_cache_dir.
+(examples/tmax_search/beaker/services.py), and the Miles task waits for them and stops them when training succeeds;
+its sandboxes are the config's sandbox_backend if it sets one (the multi-teacher OPD recipe, examples/tmax_mopd, runs
+terminal sandboxes on a fleet too), else none. Its keys: replicas (terminal / localsearch counts, default the
+Prime-RL run.yaml's), priority (a Beaker priority for some service tasks by name, e.g. ``{judge: urgent}``; default
+the Miles task's), run_root (where each run's service state lives, on oe-adapt-default), hf_token_secret,
+nvme_cache_dir.
 """
 
 import argparse
@@ -52,6 +55,7 @@ import tmax_wandb  # noqa: E402
 _REPO = Path(__file__).resolve().parents[3]
 _ENTRY = "examples/tmax/beaker/tmax_beaker_entry.sh"
 _SNAPSHOT = "/tmp/miles_snapshot"
+_EXAMPLES = ("examples/tmax", "examples/tmax_search", "examples/tmax_mopd")  # the code a job runs from this checkout
 
 
 def _description(*, config: dict, config_stem: str, exp_name: str, commit: str, overrides: list[str]) -> str:
@@ -78,9 +82,9 @@ def main() -> None:
     config = yaml.safe_load(config_path.read_text())
     beaker = config.get("beaker") or {}
     commit = _git("rev-parse", "HEAD")
-    if _git("status", "--porcelain", "--", "examples/tmax", "examples/tmax_search") and not args.allow_dirty:
+    if _git("status", "--porcelain", "--", *_EXAMPLES) and not args.allow_dirty:
         raise SystemExit(
-            "examples/tmax(_search) has uncommitted changes; the job runs the committed code. Commit first."
+            f"{', '.join(_EXAMPLES)}: uncommitted changes; the job runs the committed code. Commit first."
         )
     exp_name = args.exp_name or (
         f"{config['exp_name']}_{time.strftime('%Y%m%d_%H%M%S', time.gmtime())}" if config.get("exp_name") else ""
@@ -128,7 +132,7 @@ def _parse_args() -> argparse.Namespace:
         help="keep the job off this node (repeatable), e.g. holmes-cs-aus-556",
     )
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--allow-dirty", action="store_true", help="submit although examples/tmax is uncommitted")
+    parser.add_argument("--allow-dirty", action="store_true", help="submit although the examples are uncommitted")
     argv = sys.argv[1:]
     split = argv.index("--") if "--" in argv else len(argv)
     args = parser.parse_args(argv[:split])
@@ -279,12 +283,17 @@ def _search_services(config: dict, exp_name: str, *, create_dirs: bool) -> dict:
         state_dir=service_view(state_dir),
         identity=f"{user}-{exp_name}".replace("_", "-").lower(),
         hf_token_secret=section.get("hf_token_secret", f"{user}_HF_TOKEN"),
-        context={"priority": beaker.get("priority", "normal"), "min_runtime": beaker.get("min_runtime") or "0h"},
+        context={
+            "priority": beaker.get("priority", "normal"),
+            "min_runtime": beaker.get("min_runtime") or "0h",
+            "task_priority": section.get("priority") or {},
+        },
         replicas=section.get("replicas") or {},
         nvme_cache_dir=section.get("nvme_cache_dir", f"/nvme/{user}/prime-rl/retrieval"),
     )
     env = {
-        "SANDBOX_BACKEND": "none",
+        # The search recipe needs no sandboxes; a config that sets sandbox_backend gets its own.
+        **({} if "sandbox_backend" in config else {"SANDBOX_BACKEND": "none"}),
         "SEARCH_ENDPOINT_DIR": f"{run_dir}/runtime/endpoint-files",
         "SEARCH_LIFECYCLE_DIR": state_dir,
         "SEARCH_SERVICE_NAME": service["local_search_service_name"],

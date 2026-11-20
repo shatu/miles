@@ -19,6 +19,7 @@ End-to-end training workflows — the place to start.
 - **[tmax](./tmax)**: Terminal-RL on the TMax tasks with per-task Podman sandboxes: sync and fully-async GRPO, plus on-policy distillation.
   - **[beaker](./tmax/beaker)**: Running the TMax experiments on AI2's Beaker: submissions, resume, images, mirrors, monitoring and failure triage.
 - **[tmax_search](./tmax_search)**: Search-agent RL on BrowseComp-style questions with a local search corpus and an LLM judge, Prime-RL's recipe on the TMax setup.
+- **[tmax_mopd](./tmax_mopd)**: Multi-teacher on-policy distillation of the terminal and search agents into one student, each episode scored by its domain's teacher.
 
 ## [Infra Features](./infra_features)
 

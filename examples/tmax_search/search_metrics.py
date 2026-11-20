@@ -52,30 +52,36 @@ _REWARD_COMPONENTS = ("judge_answer", "tool_stderr_penalty_reward", "missing_fin
 
 def nonzero_std_filter(args, samples, **kwargs) -> FilterOutput:
     """Miles' zero-variance filter (drop and refill), after recording the group."""
-    _record_group(args, samples)
+    record_group(args, samples)
     return apply_reward_nonzero_std_filter(args, samples, **kwargs)
 
 
 def missing_reward_filter(args, samples, **kwargs) -> FilterOutput:
     """Miles' missing-reward filter alone, after recording the group: with the zero-variance filter off (Prime-RL's
     masking, see search_loss.py) a group whose judge failed is dropped, every other group trains."""
-    _record_group(args, samples)
+    record_group(args, samples)
     return apply_missing_reward_filter(args, samples, **kwargs)
 
 
 def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time) -> bool:
-    with _lock:
-        groups = list(_groups)
-        _groups.clear()
-    episodes = [e for g in groups for e in g["episodes"]]
-    metrics = _episode_metrics(episodes) | _group_metrics(groups) | trained_metrics(args, rollout_id, samples)
+    metrics = rollout_metrics(args, rollout_id, samples)
     if metrics:
         metrics["rollout/step"] = compute_rollout_step(args, rollout_id)
         tracking.log(args, metrics, step_key="rollout/step")
     return False
 
 
-def _record_group(args, samples) -> None:
+def rollout_metrics(args, rollout_id: int, samples) -> dict[str, float]:
+    """What log_rollout_data logs: the groups recorded since the last call, and the trained samples."""
+    with _lock:
+        groups = list(_groups)
+        _groups.clear()
+    episodes = [e for g in groups for e in g["episodes"]]
+    return _episode_metrics(episodes) | _group_metrics(groups) | trained_metrics(args, rollout_id, samples)
+
+
+def record_group(args, samples) -> None:
+    """Record a finished group for the next rollout_metrics call (the filter hooks do, before they filter)."""
     episodes = []
     for s in iter_samples(samples):
         metadata = s.metadata or {}

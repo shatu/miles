@@ -1,5 +1,6 @@
 """The TMax launcher's GPU layout with SGLang OPD teacher servers (run_tmax_qwen3_5.py)."""
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "examples" / "tmax"))
 
 import launch_common  # noqa: E402
+import opd_teachers  # noqa: E402
 import run_tmax_qwen3_5 as launcher  # noqa: E402
 
 
@@ -36,10 +38,24 @@ def test_colocated_training_with_an_sglang_teacher_is_one_node_only():
         _args(num_nodes=2, opd_teacher_gpus=1)
 
 
+def test_the_teacher_server_actor_unpickles_where_its_module_is_not_importable(tmp_path):
+    """Ray workers do not have examples/tmax on their path: the actor class must travel by value."""
+    cloudpickle = pytest.importorskip("ray.cloudpickle")
+    opd_teachers.ship_by_value()
+    blob = cloudpickle.dumps(opd_teachers._TeacherServer)
+    load = (
+        "import pickle, sys; cls = pickle.loads(sys.stdin.buffer.read()); print(cls.__name__, hasattr(cls, 'start'))"
+    )
+    # -I: no PYTHONPATH, no script directory; the interpreter's site-packages (Ray) only.
+    done = subprocess.run([sys.executable, "-I", "-c", load], input=blob, capture_output=True, cwd=tmp_path)
+    assert done.returncode == 0, done.stderr.decode()[-2000:]
+    assert done.stdout.decode().split() == ["_TeacherServer", "True"]
+
+
 def test_teacher_servers_go_round_robin_over_the_rollout_nodes_last_first():
-    assert launcher._opd_teacher_hosts(num_nodes=4, train_nodes=2, num_servers=2) == [3, 2]
-    assert launcher._opd_teacher_hosts(num_nodes=4, train_nodes=2, num_servers=4) == [3, 2, 3, 2]
-    assert launcher._opd_teacher_hosts(num_nodes=1, train_nodes=1, num_servers=2) == [0, 0]
+    assert opd_teachers.hosts(num_nodes=4, train_nodes=2, num_servers=2) == [3, 2]
+    assert opd_teachers.hosts(num_nodes=4, train_nodes=2, num_servers=4) == [3, 2, 3, 2]
+    assert opd_teachers.hosts(num_nodes=1, train_nodes=1, num_servers=2) == [0, 0]
 
 
 def test_a_same_architecture_teacher_takes_no_gpu():
@@ -56,6 +72,6 @@ def test_a_hub_recipe_is_downloaded_and_a_local_checkpoint_copied_once():
 
 
 def test_the_opd_checkpoint_recipe_is_a_local_qwen35_9b():
-    recipe = launcher._RECIPES["tmax-opd-9b-step80"]
+    recipe = launcher.RECIPES["tmax-opd-9b-step80"]
     assert recipe.hf_repo.startswith("/") and recipe.hf_repo.endswith("/hf/step_79")
     assert recipe.megatron_model_type == "qwen3.5-9B" and recipe.enable_thinking

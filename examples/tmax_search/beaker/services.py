@@ -96,7 +96,8 @@ def service_tasks(
     """The template's tasks for one Miles run. Paths are the service tasks' own, under their /weka (oe-adapt-default).
 
     ``replicas`` overrides the run.yaml's terminal / localsearch counts (smoke tests run few); ``context`` gives the
-    tasks' ``priority`` and ``min_runtime``."""
+    tasks' ``priority`` and ``min_runtime``, and in ``task_priority`` a priority for some tasks by name (the judge's
+    GPU, for one, can be preempted by higher-priority Holmes work)."""
     template = json.loads(template_path(prime_rl_source).read_text())
     service = yaml.safe_load(Path(prime_rl_run_yaml).read_text())["service"]
     assert service.get("local_search_backend") == "quote_bm25_v1", "the template's search tasks are quote_bm25_v1"
@@ -122,16 +123,20 @@ def service_tasks(
         "localsearch": replicas.get("localsearch", service["local_search_replicas"]),
     }
     judge_model = service["generation_model"]
+    task_priority = context.get("task_priority") or {}
+    unknown = set(task_priority) - {task["name"] for task in tasks}
+    assert not unknown, f"search_services.priority names no service task: {sorted(unknown)}"
     for task in tasks:
         assert task["name"] != "judge" or f"--model={judge_model}" in json.dumps(task["command"]), judge_model
         if task["name"] in counts:
             task["replicas"] = counts[task["name"]]
-        # The Miles task's priority; its minimum runtime for the tasks Prime-RL guarantees one (the judge, 8 h there),
-        # while the CPU services keep none, as in Prime-RL. A smoke runs without one, on unallocated capacity.
+        # The Miles task's priority unless task_priority names the task; the Miles task's minimum runtime for the tasks
+        # Prime-RL guarantees one (the judge, 8 h there), while the CPU services keep none, as in Prime-RL. A smoke runs
+        # without one, on unallocated capacity.
         guaranteed = task["context"].get("minRuntime", "0h") != "0h"
         task["context"] = {
             **task["context"],
-            "priority": context["priority"],
+            "priority": task_priority.get(task["name"], context["priority"]),
             "minRuntime": context["min_runtime"] if guaranteed else "0h",
         }
     return tasks
