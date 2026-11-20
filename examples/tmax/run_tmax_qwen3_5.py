@@ -107,14 +107,12 @@ Smoke test on four 80GB+ GPUs:
 
 import json
 import os
-import subprocess
 import sys
-import time
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import opd_teachers
 import pandas as pd
 import typer
 from launch_common import apply_yaml_config, fetch_command, wandb_args
@@ -123,7 +121,6 @@ from tmax_prompts import TMAX_SYSTEM_PROMPT
 from miles.utils.external_utils import command_utils
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-_OPD_TEACHER_PORT = 30100  # the first SGLang teacher on a node (--opd-teacher-mode sglang); the next ones count up
 _DATASET = "allenai/tmax-15k-open-instruct"
 
 _MODEL_NAMES = Literal[
@@ -505,7 +502,7 @@ def execute(args: ScriptArgs):
         else:
             # generate.generate_with_teacher sends Miles' teacher request to the servers _start_opd_teachers lists in
             # opd_teacher_urls_file, in place of --rm-url, which Miles' request otherwise goes to.
-            grpo_args += f"--rm-url http://127.0.0.1:{_OPD_TEACHER_PORT}/generate "
+            grpo_args += f"--rm-url http://127.0.0.1:{opd_teachers.PORT}/generate "
         if args.opd_pure:
             # The trained reward is 0 for every sample, so GRPO's advantage is 0 and the OPD term is all that is left;
             # raw_reward (what rollout/raw_reward logs) stays the task reward.
@@ -622,91 +619,15 @@ def execute(args: ScriptArgs):
 
 
 def _start_opd_teachers(args: ScriptArgs) -> None:
-    """Serve the OPD teacher on opd_teacher_gpus SGLang servers of one GPU each, list them in opd_teacher_urls_file
-    and wait until every one answers: up to 30 min, after which the launch fails with the servers' log tails. Runs
-    after the Ray cluster is up, before the job is submitted.
-
-    Each server is a detached Ray actor that holds its GPU (Ray sets its CUDA_VISIBLE_DEVICES) and runs SGLang on it,
-    on the last nodes in the order Miles' placement group sorts them (node IP): there the rollout side is, so the
-    placement group, created next on the GPUs left, still gives training its whole nodes first.
-    """
-    import ray
-    from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
-
-    from miles.ray.placement_group import sort_key
-
-    ray.init(address="auto", namespace="tmax_opd_teacher", logging_level="ERROR")
-    nodes = sorted(
-        (n for n in ray.nodes() if n["Alive"] and n["Resources"].get("GPU")),
-        key=lambda n: sort_key((0, n["NodeManagerAddress"], 0)),
+    """Serve the OPD teacher on opd_teacher_gpus SGLang servers of one GPU each, on the rollout nodes (opd_teachers)."""
+    opd_teachers.start(
+        [(args.opd_teacher, f"{args.model_dir}/{args.opd_teacher}")] * args.opd_teacher_gpus,
+        tokenizer_path=f"{args.model_dir}/{args.model_name}",
+        context_length=args.max_seq_len + 2048,
+        num_nodes=args.num_nodes,
+        train_nodes=args.train_layout[0],
+        urls_file=args.opd_teacher_urls_file,
     )
-    assert len(nodes) == args.num_nodes, f"expected {args.num_nodes} GPU nodes in the Ray cluster, found {len(nodes)}"
-    hosts = _opd_teacher_hosts(len(nodes), args.train_layout[0], args.opd_teacher_gpus)
-    run_dir = os.path.dirname(args.opd_teacher_urls_file)
-    os.makedirs(run_dir, exist_ok=True)
-    server = ray.remote(num_gpus=1, num_cpus=1)(_OpdTeacherServer)
-    urls, logs = [], []
-    for i, node in enumerate(hosts):
-        port = _OPD_TEACHER_PORT + hosts[:i].count(node)
-        logs.append(f"{run_dir}/opd-teacher-{i}.log")
-        actor = server.options(
-            name=f"opd-teacher-{i}",
-            lifetime="detached",
-            scheduling_strategy=NodeAffinitySchedulingStrategy(nodes[node]["NodeID"], soft=False),
-        ).remote()
-        command = [
-            "-m", "sglang.launch_server",
-            "--model-path", f"{args.model_dir}/{args.opd_teacher}",
-            # --language-only: the tmax checkpoints ship no vision tower. SGLang still loads an image processor for
-            # Qwen3.5, from the tokenizer path; the tmax checkpoints ship none, so the student's stands in (the
-            # processor configs are identical across Qwen3.5 sizes, and the vocabulary is shared: requests carry
-            # token ids).
-            "--tokenizer-path", f"{args.model_dir}/{args.model_name}", "--language-only",
-            "--port", str(port), "--tp-size", "1", "--mem-fraction-static", "0.8",
-            "--context-length", str(args.max_seq_len + 2048),
-        ]  # fmt: skip
-        host = ray.get(actor.start.remote(command, logs[-1]))
-        urls.append(f"http://{host}:{port}/generate")
-    with open(args.opd_teacher_urls_file, "w") as f:
-        json.dump(urls, f)
-    print(f"OPD teacher servers: {urls}", flush=True)
-    pending, deadline = set(urls), time.time() + 1800
-    while pending and time.time() < deadline:
-        for url in sorted(pending):
-            try:
-                urllib.request.urlopen(url.removesuffix("/generate") + "/health_generate", timeout=30)
-                pending.discard(url)
-            except OSError:
-                pass
-        if pending:
-            time.sleep(5)
-    if pending:
-        for log in logs:
-            print(f"==> {log}", Path(log).read_text()[-8000:], sep="\n", flush=True)
-        raise RuntimeError(f"OPD teacher servers not healthy after 30 min: {sorted(pending)}")
-
-
-def _opd_teacher_hosts(num_nodes: int, train_nodes: int, num_servers: int) -> list[int]:
-    """The node (index in Miles' placement order) of each teacher server: round-robin over the rollout nodes, the
-    last first; on one node, that node."""
-    rollout_nodes = list(range(train_nodes, num_nodes)) if num_nodes > 1 else [0]
-    return [rollout_nodes[-1 - i % len(rollout_nodes)] for i in range(num_servers)]
-
-
-class _OpdTeacherServer:
-    """A Ray actor holding one GPU, on which it runs an SGLang teacher server. The server is the actor's child, so Ray
-    stops it with the actor (detached: at ray stop, or when the node goes), and the GPU is never busy while Ray counts
-    it free."""
-
-    def start(self, command: list[str], log: str) -> str:
-        import ray
-
-        host = ray.util.get_node_ip_address()
-        with open(log, "w") as out:
-            self._server = subprocess.Popen(
-                [sys.executable, *command, "--host", host], stdout=out, stderr=subprocess.STDOUT
-            )
-        return host
 
 
 if __name__ == "__main__":

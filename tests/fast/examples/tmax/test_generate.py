@@ -118,7 +118,7 @@ def test_the_wrapper_registers_the_agentic_generate_flags():
 
 def test_teacher_requests_go_to_the_least_busy_listed_server(monkeypatch, tmp_path):
     urls = ["http://10.0.0.3:30100/generate", "http://10.0.0.4:30100/generate"]
-    (tmp_path / "opd-teachers.json").write_text(json.dumps(urls))
+    (tmp_path / "opd-teachers.json").write_text(json.dumps({"tmax-9b": urls}))
     samples = [
         Sample(index=i, tokens=[1, 2, 3], response_length=1, metadata={"reward": 0.0}) for i in range(len(urls) * 2)
     ]
@@ -155,7 +155,30 @@ def test_without_a_server_list_the_teacher_is_rm_url(monkeypatch):
 
 def test_idle_teacher_servers_take_turns(monkeypatch, tmp_path):
     urls = ["http://10.0.0.3:30100/generate", "http://10.0.0.4:30100/generate"]
-    (tmp_path / "opd-teachers.json").write_text(json.dumps(urls))
+    (tmp_path / "opd-teachers.json").write_text(json.dumps({"tmax-9b": urls}))
     monkeypatch.setenv("TMAX_OPD_TEACHER_URLS_FILE", str(tmp_path / "opd-teachers.json"))
-    picks = [generate._pick_teacher(ARGS) for _ in range(4)]  # nothing in flight: every pick is a tie
+    sample = Sample(metadata={})  # one teacher: the sample need not name it
+    picks = [generate._pick_teacher(ARGS, sample) for _ in range(4)]  # nothing in flight: every pick is a tie
     assert sorted(picks) == sorted(urls * 2), "ties alternate instead of always going to the first server"
+
+
+def test_with_several_teachers_each_sample_goes_to_its_own(monkeypatch, tmp_path):
+    teachers = {
+        "terminal": ["http://10.0.0.3:30100/generate"],
+        "search": ["http://10.0.0.3:30101/generate", "http://10.0.0.4:30100/generate"],
+    }
+    (tmp_path / "opd-teachers.json").write_text(json.dumps(teachers))
+    monkeypatch.setenv("TMAX_OPD_TEACHER_URLS_FILE", str(tmp_path / "opd-teachers.json"))
+    for name, urls in teachers.items():
+        sample = Sample(metadata={"opd_teacher": name})
+        assert {generate._pick_teacher(ARGS, sample) for _ in range(4)} == set(urls)
+    with pytest.raises(KeyError):
+        generate._pick_teacher(ARGS, Sample(metadata={}))  # with several teachers a sample must name one
+
+
+def test_a_sample_whose_reward_comes_later_is_scored(monkeypatch):
+    """The search agent leaves its reward to --custom-rm-path (the judge), which Miles runs after this function."""
+    judged_later = Sample(index=0, tokens=[1, 2, 3], response_length=1, metadata={"search_episode": {}})
+    calls = _teacher_scored(monkeypatch, lambda s: _teacher_response(s.tokens, [-1.0, -1.0]), [judged_later])
+    _generate()
+    assert calls == [0] and judged_later.teacher_log_probs == [-1.0]

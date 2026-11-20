@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "examples" / "tmax"))
 
 import launch_common  # noqa: E402
+import opd_teachers  # noqa: E402
 import run_tmax_qwen3_5 as launcher  # noqa: E402
 
 
@@ -37,9 +38,9 @@ def test_colocated_training_with_an_sglang_teacher_is_one_node_only():
 
 
 def test_teacher_servers_go_round_robin_over_the_rollout_nodes_last_first():
-    assert launcher._opd_teacher_hosts(num_nodes=4, train_nodes=2, num_servers=2) == [3, 2]
-    assert launcher._opd_teacher_hosts(num_nodes=4, train_nodes=2, num_servers=4) == [3, 2, 3, 2]
-    assert launcher._opd_teacher_hosts(num_nodes=1, train_nodes=1, num_servers=2) == [0, 0]
+    assert opd_teachers.hosts(num_nodes=4, train_nodes=2, num_servers=2) == [3, 2]
+    assert opd_teachers.hosts(num_nodes=4, train_nodes=2, num_servers=4) == [3, 2, 3, 2]
+    assert opd_teachers.hosts(num_nodes=1, train_nodes=1, num_servers=2) == [0, 0]
 
 
 def test_a_same_architecture_teacher_takes_no_gpu():
