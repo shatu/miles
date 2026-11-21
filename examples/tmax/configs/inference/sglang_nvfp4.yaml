@@ -1,0 +1,11 @@
+# Native SGLang config using the BF16 source checkpoint and patched dense W4A4 kernels.
+model-path: /weka/nora-default/shashankg/miles_tmax_v2/models/Qwen3.5-4B-tmax-template
+dtype: bfloat16
+quantization: nvfp4_dense_online
+tp-size: 1
+context-length: 67584
+mem-fraction-static: 0.8
+reasoning-parser: qwen3
+tool-call-parser: qwen3_coder
+host: 127.0.0.1
+port: 30000
