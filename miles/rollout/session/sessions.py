@@ -55,11 +55,7 @@ from miles.utils.processing_utils import load_tokenizer
 logger = logging.getLogger(__name__)
 
 
-def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addition_r3: bool = False):
-    if not config.hf_checkpoint:
-        logger.info("[session] Skipping session routes (hf_checkpoint not set).")
-        return
-
+def create_session_core(backend, config: SessionServerConfig, *, use_addition_r3=False):
     message_matcher_selector = config.session_message_matcher
     message_matcher = resolve_session_message_matcher(message_matcher_selector)
     logger.info("[session] Using message matcher selector=%r callable=%r", message_matcher_selector, message_matcher)
@@ -73,7 +69,6 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
         tokenizer_type=config.tito_model,
         chat_template_kwargs=config.apply_chat_template_kwargs,
     )
-    merge_inline_system = not detect_inline_system_support(getattr(tokenizer, "chat_template", None))
 
     use_v2 = config.use_session_server == "v2"
     if use_v2:
@@ -85,6 +80,19 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
     else:
         registry = SessionRegistry(tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher)
         core = SessionCore(backend, registry, config, config.instance_id, use_addition_r3=use_addition_r3)
+
+    return core
+
+
+def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addition_r3: bool = False):
+    if not config.hf_checkpoint:
+        logger.info("[session] Skipping session routes (hf_checkpoint not set).")
+        return
+
+    core = create_session_core(backend, config, use_addition_r3=use_addition_r3)
+    app.state.session_core = core
+    use_v2 = config.use_session_server == "v2"
+    merge_inline_system = not detect_inline_system_support(getattr(core.registry.tokenizer, "chat_template", None))
 
     @app.exception_handler(SessionError)
     async def session_error_handler(request: Request, exc: SessionError):
@@ -231,9 +239,14 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
         params = json.loads(body) if body else {}
         if use_v2:
             return await core.collect_samples(
-                session_id, max_seq_len=params.get("max_seq_len"), agent_metadata=params.get("metadata")
+                session_id,
+                max_seq_len=params.get("max_seq_len"),
+                agent_metadata=params.get("metadata"),
+                collection_id=params.get("collection_id"),
             )
-        return await core.collect_samples(session_id, max_seq_len=params.get("max_seq_len"))
+        return await core.collect_samples(
+            session_id, max_seq_len=params.get("max_seq_len"), collection_id=params.get("collection_id")
+        )
 
     @app.api_route("/sessions/{session_id}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
     async def session_proxy(request: Request, session_id: str, path: str):
