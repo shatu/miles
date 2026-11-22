@@ -29,8 +29,8 @@ the training job.
 =====================
 
 Args:
-  --model-name: student, a key of _RECIPES (default: Qwen3.5-9B).
-  --opd-teacher: teacher, a key of _RECIPES (default: none, no OPD).
+  --model-name: student, a key of RECIPES (default: Qwen3.5-9B).
+  --opd-teacher: teacher, a key of RECIPES (default: none, no OPD).
   --opd-teacher-mode: megatron (in the trainer; same architecture only), sglang (--opd-teacher-gpus SGLang servers of
       one GPU each, on the last nodes, the rollout side), or auto: megatron when the architectures match (default).
   --opd-kl-coef: weight of the per-token reverse-KL penalty (default: 1.0).
@@ -107,14 +107,12 @@ Smoke test on four 80GB+ GPUs:
 
 import json
 import os
-import subprocess
 import sys
-import time
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import opd_teachers
 import pandas as pd
 import typer
 from launch_common import apply_yaml_config, fetch_command, wandb_args
@@ -123,10 +121,9 @@ from tmax_prompts import TMAX_SYSTEM_PROMPT
 from miles.utils.external_utils import command_utils
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-_OPD_TEACHER_PORT = 30100  # the first SGLang teacher on a node (--opd-teacher-mode sglang); the next ones count up
 _DATASET = "allenai/tmax-15k-open-instruct"
 
-_MODEL_NAMES = Literal[
+MODEL_NAMES = Literal[
     "Qwen3.5-9B",
     "Qwen3.5-9B-tmax-template",
     "Qwen3.5-4B-tmax-template",
@@ -136,6 +133,7 @@ _MODEL_NAMES = Literal[
     "tmax-9b",
     "tmax-27b",
     "tmax-opd-9b-step80",
+    "search-4b-bcrl-v11-step279",
 ]
 
 
@@ -150,7 +148,7 @@ class _Recipe:
     enable_thinking: bool
 
 
-_RECIPES: dict[str, _Recipe] = {
+RECIPES: dict[str, _Recipe] = {
     "Qwen3.5-9B": _Recipe("Qwen/Qwen3.5-9B", "qwen3.5-9B", enable_thinking=True),
     # open-instruct's production TMax student
     "Qwen3.5-9B-tmax-template": _Recipe("hamishivi/Qwen3.5-9B", "qwen3.5-9B", enable_thinking=True),
@@ -169,6 +167,15 @@ _RECIPES: dict[str, _Recipe] = {
         "qwen3.5-9B",
         enable_thinking=True,
     ),
+    # The search agent's teacher for multi-teacher OPD (examples/tmax_mopd): step 280 of the search port's run of
+    # Prime-RL's bc-rl-v1-1 recipe on hamishivi/Qwen3.5-4B (search_prod4node_4b_bcrl_v11_high8h, examples/tmax_search),
+    # its HF snapshot with hamishivi/Qwen3.5-4B's chat template; language-model weights only.
+    "search-4b-bcrl-v11-step279": _Recipe(
+        "/weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles/"
+        "search_prod4node_4b_bcrl_v11_high8h_20261112_203111/checkpoints/hf_eval/step_279",
+        "qwen3.5-4B",
+        enable_thinking=True,
+    ),
 }
 
 app = typer.Typer()
@@ -177,8 +184,8 @@ app = typer.Typer()
 @dataclass
 class ScriptArgs(command_utils.ExecuteTrainConfig):
     run_id: str = command_utils.create_run_id()
-    model_name: _MODEL_NAMES = "Qwen3.5-9B"
-    opd_teacher: _MODEL_NAMES | None = None
+    model_name: MODEL_NAMES = "Qwen3.5-9B"
+    opd_teacher: MODEL_NAMES | None = None
     opd_kl_coef: float = 1.0
     # open-instruct's --opd_pure: the advantage is the OPD term alone; the task reward is logged, not trained on.
     opd_pure: bool = False
@@ -264,7 +271,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
             f"({self.save_interval}): HF snapshots are written at saves"
         )
         if self.opd_teacher is not None:
-            student, teacher = _RECIPES[self.model_name], _RECIPES[self.opd_teacher]
+            student, teacher = RECIPES[self.model_name], RECIPES[self.opd_teacher]
             assert self.opd_mode == "sglang" or student.megatron_model_type == teacher.megatron_model_type, (
                 f"Megatron-mode OPD needs one architecture: {self.model_name} is {student.megatron_model_type}, "
                 f"{self.opd_teacher} is {teacher.megatron_model_type}"
@@ -289,7 +296,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 
     @property
     def recipe(self) -> _Recipe:
-        return _RECIPES[self.model_name]
+        return RECIPES[self.model_name]
 
     @property
     def opd_mode(self) -> Literal["megatron", "sglang"] | None:
@@ -298,7 +305,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
         if self.opd_teacher_mode != "auto":
             return self.opd_teacher_mode
         same_architecture = (
-            _RECIPES[self.model_name].megatron_model_type == _RECIPES[self.opd_teacher].megatron_model_type
+            RECIPES[self.model_name].megatron_model_type == RECIPES[self.opd_teacher].megatron_model_type
         )
         return "megatron" if same_architecture else "sglang"
 
@@ -352,6 +359,27 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     def trace_run_dir(self) -> str:
         return f"{self.trace_dir}/{self.exp_name or self.run_id}" if self.trace_dir else ""
 
+    def agent_env(self, *, trace_dir: str) -> dict[str, str]:
+        """The episode loop's and the sandboxes' settings, which the rollout process reads from its environment
+        (tmax_agent_function, tmax_sandbox); episode traces go to ``trace_dir`` (empty: none)."""
+        assert (
+            self.sandbox_backend != "gateway" or self.sandbox_gateway_url
+        ), "--sandbox-backend gateway needs --gateway-url or TMAX_GATEWAY_URL"
+        return {
+            "TMAX_TASK_DATA_DIR": self.task_data_dir,
+            "TMAX_SANDBOX_BACKEND": self.sandbox_backend,
+            "TMAX_GATEWAY_URL": self.sandbox_gateway_url,
+            "TMAX_DOCKER_HOST": self.sandbox_docker_host,
+            "TMAX_MAX_STEPS": str(self.max_steps),
+            "TMAX_START_CONCURRENCY": str(self.sandbox_start_concurrency),
+            "TMAX_EXEC_CONCURRENCY": str(self.sandbox_exec_concurrency),
+            "TMAX_SANDBOXES_PER_NODE": str(self.sandboxes_per_node),
+            "TMAX_START_FAILURE": self.start_failure,
+            "TMAX_EPISODE_TIMEOUT_S": str(self.episode_timeout_s),
+            "TMAX_TOOL_CALL_TIMEOUT_S": str(self.tool_call_timeout_s),
+            "TMAX_TRACE_DIR": trace_dir,
+        }
+
     @property
     def dataset_dir(self) -> str:
         return f"{self.data_dir}/{_DATASET.split('/')[1]}"
@@ -370,16 +398,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 @command_utils.dataclass_cli
 def prepare(args: ScriptArgs):
     U = args.create_backend()
-    U.hf_download_dataset(_DATASET, data_dir=args.data_dir)
-    if not Path(args.task_data_dir).exists():
-        U.exec_command_cpu(
-            f"mkdir -p {args.task_data_dir}.tmp && "
-            f"tar -xzf {args.dataset_dir}/task-data.tar.gz -C {args.task_data_dir}.tmp && "
-            f"mv {args.task_data_dir}.tmp {args.task_data_dir}"
-        )
-    _write_prompt_data(args)
+    prepare_tasks(U, args)
     for name in filter(None, [args.model_name, args.opd_teacher]):
-        recipe = _RECIPES[name]
+        recipe = RECIPES[name]
         U.exec_command_cpu(fetch_command(recipe.hf_repo, f"{args.model_dir}/{name}"))
         if name == args.opd_teacher and args.opd_mode == "sglang":
             continue  # SGLang serves the HF checkpoint
@@ -391,6 +412,19 @@ def prepare(args: ScriptArgs):
             hf_checkpoint=f"{args.model_dir}/{name}",
             megatron_path=args.megatron_path,
         )
+
+
+def prepare_tasks(U, args: ScriptArgs) -> None:
+    """Download the dataset, extract the task directories (tmax_agent_function's TMAX_TASK_DATA_DIR) and write the
+    prompt JSONL (args.prompt_data). ``U`` is the launcher's backend (args.create_backend())."""
+    U.hf_download_dataset(_DATASET, data_dir=args.data_dir)
+    if not Path(args.task_data_dir).exists():
+        U.exec_command_cpu(
+            f"mkdir -p {args.task_data_dir}.tmp && "
+            f"tar -xzf {args.dataset_dir}/task-data.tar.gz -C {args.task_data_dir}.tmp && "
+            f"mv {args.task_data_dir}.tmp {args.task_data_dir}"
+        )
+    _write_prompt_data(args)
 
 
 def _write_prompt_data(args: ScriptArgs) -> None:
@@ -412,9 +446,7 @@ def _write_prompt_data(args: ScriptArgs) -> None:
 @command_utils.dataclass_cli
 def execute(args: ScriptArgs):
     U = args.create_backend()
-    assert (
-        args.sandbox_backend != "gateway" or args.sandbox_gateway_url
-    ), "--sandbox-backend gateway needs --gateway-url or TMAX_GATEWAY_URL"
+    agent_env = args.agent_env(trace_dir=args.trace_run_dir)
     ckpt_args = (
         f"--hf-checkpoint {args.model_dir}/{args.model_name} "
         f"--ref-load {args.model_dir}/{args.model_name}_torch_dist "
@@ -505,7 +537,7 @@ def execute(args: ScriptArgs):
         else:
             # generate.generate_with_teacher sends Miles' teacher request to the servers _start_opd_teachers lists in
             # opd_teacher_urls_file, in place of --rm-url, which Miles' request otherwise goes to.
-            grpo_args += f"--rm-url http://127.0.0.1:{_OPD_TEACHER_PORT}/generate "
+            grpo_args += f"--rm-url http://127.0.0.1:{opd_teachers.PORT}/generate "
         if args.opd_pure:
             # The trained reward is 0 for every sample, so GRPO's advantage is 0 and the OPD term is all that is left;
             # raw_reward (what rollout/raw_reward logs) stays the task reward.
@@ -595,18 +627,7 @@ def execute(args: ScriptArgs):
         train_script="train_async.py" if args.fully_async else "train.py",
         extra_env_vars={
             "PYTHONPATH": f"{args.megatron_path}:{_SCRIPT_DIR}:{command_utils.repo_base_dir}",
-            "TMAX_TASK_DATA_DIR": args.task_data_dir,
-            "TMAX_SANDBOX_BACKEND": args.sandbox_backend,
-            "TMAX_GATEWAY_URL": args.sandbox_gateway_url,
-            "TMAX_DOCKER_HOST": args.sandbox_docker_host,
-            "TMAX_MAX_STEPS": str(args.max_steps),
-            "TMAX_START_CONCURRENCY": str(args.sandbox_start_concurrency),
-            "TMAX_EXEC_CONCURRENCY": str(args.sandbox_exec_concurrency),
-            "TMAX_SANDBOXES_PER_NODE": str(args.sandboxes_per_node),
-            "TMAX_START_FAILURE": args.start_failure,
-            "TMAX_EPISODE_TIMEOUT_S": str(args.episode_timeout_s),
-            "TMAX_TOOL_CALL_TIMEOUT_S": str(args.tool_call_timeout_s),
-            "TMAX_TRACE_DIR": args.trace_run_dir,
+            **agent_env,
             # read by generate.generate_with_teacher, in the rollout process
             **(
                 {
@@ -622,91 +643,15 @@ def execute(args: ScriptArgs):
 
 
 def _start_opd_teachers(args: ScriptArgs) -> None:
-    """Serve the OPD teacher on opd_teacher_gpus SGLang servers of one GPU each, list them in opd_teacher_urls_file
-    and wait until every one answers: up to 30 min, after which the launch fails with the servers' log tails. Runs
-    after the Ray cluster is up, before the job is submitted.
-
-    Each server is a detached Ray actor that holds its GPU (Ray sets its CUDA_VISIBLE_DEVICES) and runs SGLang on it,
-    on the last nodes in the order Miles' placement group sorts them (node IP): there the rollout side is, so the
-    placement group, created next on the GPUs left, still gives training its whole nodes first.
-    """
-    import ray
-    from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
-
-    from miles.ray.placement_group import sort_key
-
-    ray.init(address="auto", namespace="tmax_opd_teacher", logging_level="ERROR")
-    nodes = sorted(
-        (n for n in ray.nodes() if n["Alive"] and n["Resources"].get("GPU")),
-        key=lambda n: sort_key((0, n["NodeManagerAddress"], 0)),
+    """Serve the OPD teacher on opd_teacher_gpus SGLang servers of one GPU each, on the rollout nodes (opd_teachers)."""
+    opd_teachers.start(
+        [(args.opd_teacher, f"{args.model_dir}/{args.opd_teacher}")] * args.opd_teacher_gpus,
+        tokenizer_path=f"{args.model_dir}/{args.model_name}",
+        context_length=args.max_seq_len + 2048,
+        num_nodes=args.num_nodes,
+        train_nodes=args.train_layout[0],
+        urls_file=args.opd_teacher_urls_file,
     )
-    assert len(nodes) == args.num_nodes, f"expected {args.num_nodes} GPU nodes in the Ray cluster, found {len(nodes)}"
-    hosts = _opd_teacher_hosts(len(nodes), args.train_layout[0], args.opd_teacher_gpus)
-    run_dir = os.path.dirname(args.opd_teacher_urls_file)
-    os.makedirs(run_dir, exist_ok=True)
-    server = ray.remote(num_gpus=1, num_cpus=1)(_OpdTeacherServer)
-    urls, logs = [], []
-    for i, node in enumerate(hosts):
-        port = _OPD_TEACHER_PORT + hosts[:i].count(node)
-        logs.append(f"{run_dir}/opd-teacher-{i}.log")
-        actor = server.options(
-            name=f"opd-teacher-{i}",
-            lifetime="detached",
-            scheduling_strategy=NodeAffinitySchedulingStrategy(nodes[node]["NodeID"], soft=False),
-        ).remote()
-        command = [
-            "-m", "sglang.launch_server",
-            "--model-path", f"{args.model_dir}/{args.opd_teacher}",
-            # --language-only: the tmax checkpoints ship no vision tower. SGLang still loads an image processor for
-            # Qwen3.5, from the tokenizer path; the tmax checkpoints ship none, so the student's stands in (the
-            # processor configs are identical across Qwen3.5 sizes, and the vocabulary is shared: requests carry
-            # token ids).
-            "--tokenizer-path", f"{args.model_dir}/{args.model_name}", "--language-only",
-            "--port", str(port), "--tp-size", "1", "--mem-fraction-static", "0.8",
-            "--context-length", str(args.max_seq_len + 2048),
-        ]  # fmt: skip
-        host = ray.get(actor.start.remote(command, logs[-1]))
-        urls.append(f"http://{host}:{port}/generate")
-    with open(args.opd_teacher_urls_file, "w") as f:
-        json.dump(urls, f)
-    print(f"OPD teacher servers: {urls}", flush=True)
-    pending, deadline = set(urls), time.time() + 1800
-    while pending and time.time() < deadline:
-        for url in sorted(pending):
-            try:
-                urllib.request.urlopen(url.removesuffix("/generate") + "/health_generate", timeout=30)
-                pending.discard(url)
-            except OSError:
-                pass
-        if pending:
-            time.sleep(5)
-    if pending:
-        for log in logs:
-            print(f"==> {log}", Path(log).read_text()[-8000:], sep="\n", flush=True)
-        raise RuntimeError(f"OPD teacher servers not healthy after 30 min: {sorted(pending)}")
-
-
-def _opd_teacher_hosts(num_nodes: int, train_nodes: int, num_servers: int) -> list[int]:
-    """The node (index in Miles' placement order) of each teacher server: round-robin over the rollout nodes, the
-    last first; on one node, that node."""
-    rollout_nodes = list(range(train_nodes, num_nodes)) if num_nodes > 1 else [0]
-    return [rollout_nodes[-1 - i % len(rollout_nodes)] for i in range(num_servers)]
-
-
-class _OpdTeacherServer:
-    """A Ray actor holding one GPU, on which it runs an SGLang teacher server. The server is the actor's child, so Ray
-    stops it with the actor (detached: at ray stop, or when the node goes), and the GPU is never busy while Ray counts
-    it free."""
-
-    def start(self, command: list[str], log: str) -> str:
-        import ray
-
-        host = ray.util.get_node_ip_address()
-        with open(log, "w") as out:
-            self._server = subprocess.Popen(
-                [sys.executable, *command, "--host", host], stdout=out, stderr=subprocess.STDOUT
-            )
-        return host
 
 
 if __name__ == "__main__":

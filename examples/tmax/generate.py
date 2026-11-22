@@ -41,21 +41,23 @@ async def generate_with_teacher(input: GenerateFnInput) -> GenerateFnOutput:
     Scoring happens here, not in a reward function: session server v2 returns the samples with the agent's reward set,
     so Miles never calls ``--custom-rm-path`` for them. The task reward stays the reward, so the missing-reward filter,
     the metrics, additive OPD and ``opd_pure_rewards`` work as with the Megatron teacher (Miles' own SGLang-mode reward
-    function and post-process replace it with 0). The teacher request is Miles', sent to the least busy of the servers
-    listed in ``TMAX_OPD_TEACHER_URLS_FILE`` (the launcher's), else to ``--rm-url``. Aborted samples, samples without
-    a task reward (their group is dropped) and evaluation samples are not scored.
+    function and post-process replace it with 0). The teacher request is Miles', sent to the least busy server of the
+    sample's teacher in ``TMAX_OPD_TEACHER_URLS_FILE`` (the launcher's, opd_teachers), else to ``--rm-url``. Aborted
+    samples, samples whose agent reported no task reward (their group is dropped) and evaluation samples are not
+    scored. A sample whose agent leaves the reward to ``--custom-rm-path`` (the search judge) is scored: Miles
+    computes that reward once this function returns.
     """
     output = await agentic_tool_call.generate(input)
     if not input.evaluation:
         samples = output.samples if isinstance(output.samples, list) else [output.samples]
-        await asyncio.gather(
-            *(
-                _score_with_teacher(input.args, s)
-                for s in samples
-                if s.status != Sample.Status.ABORTED and s.metadata.get("reward") is not None
-            )
-        )
+        await asyncio.gather(*(_score_with_teacher(input.args, s) for s in samples if _may_train(s)))
     return output
+
+
+def _may_train(sample: Sample) -> bool:
+    """Not aborted, and no task reward the agent reported missing (``reward: None``, which drops the group)."""
+    reported_missing = "reward" in sample.metadata and sample.metadata["reward"] is None
+    return sample.status != Sample.Status.ABORTED and not reported_missing
 
 
 # Miles registers a generate function's own flags through its add_arguments (--custom-agent-function-path,
@@ -66,7 +68,7 @@ generate_with_teacher.add_arguments = agentic_tool_call.generate.add_arguments
 async def _score_with_teacher(args, sample: Sample) -> None:
     timeout_s = float(os.environ.get("TMAX_OPD_TEACHER_TIMEOUT_S", "1800"))
     for attempt in range(1, _TEACHER_ATTEMPTS + 1):
-        url = _pick_teacher(args)
+        url = _pick_teacher(args, sample)
         _teacher_requests_in_flight[url] += 1
         try:
             teacher_args = copy.copy(args)
@@ -91,20 +93,30 @@ _teacher_requests_in_flight: Counter[str] = Counter()
 _teacher_picks = itertools.count()
 
 
-def _pick_teacher(args) -> str:
-    """The least busy of the teacher servers the launcher started (its opd_teacher_urls_file), else --rm-url."""
+def _pick_teacher(args, sample: Sample) -> str:
+    """The least busy server of the sample's teacher, of those the launcher started (its opd_teacher_urls_file), else
+    --rm-url."""
     path = os.environ.get("TMAX_OPD_TEACHER_URLS_FILE")
-    urls = _read_teacher_urls(path) if path else (args.rm_url,)
+    urls = _teacher_servers(_read_teacher_urls(path), sample) if path else (args.rm_url,)
     start = next(_teacher_picks) % len(urls)
     return min(urls[start:] + urls[:start], key=lambda url: _teacher_requests_in_flight[url])
 
 
+def _teacher_servers(teachers: dict[str, tuple[str, ...]], sample: Sample) -> tuple[str, ...]:
+    """One teacher scores every sample; with several (multi-teacher OPD), the sample names its own in
+    ``metadata["opd_teacher"]``, which the prompt data sets."""
+    if len(teachers) == 1:
+        return next(iter(teachers.values()))
+    return teachers[sample.metadata["opd_teacher"]]
+
+
 @functools.cache
-def _read_teacher_urls(path: str) -> tuple[str, ...]:
+def _read_teacher_urls(path: str) -> dict[str, tuple[str, ...]]:
+    """opd_teachers.start's list: ``{teacher name: [server URLs]}``."""
     with open(path) as f:
-        urls = tuple(json.load(f))
-    assert urls, f"{path} lists no OPD teacher server"
-    return urls
+        teachers = {name: tuple(urls) for name, urls in json.load(f).items()}
+    assert teachers and all(teachers.values()), f"{path} lists no server for some OPD teacher: {teachers}"
+    return teachers
 
 
 def _response_log_probs(response: dict, sample: Sample) -> list[float]:

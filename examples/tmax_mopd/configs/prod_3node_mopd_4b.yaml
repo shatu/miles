@@ -1,0 +1,63 @@
+# Multi-teacher OPD into hamishivi/Qwen3.5-4B at the 4B agents' scale: allenai/tmax-4b teaches the terminal episodes and
+# the search port's 4B run at step 280 (search_prod4node_4b_bcrl_v11_high8h) the search episodes, on a 50/50 mix of
+# the 14.6k TMax tasks and that teacher's own environment: Prime-RL's bc-rl-v1-1 (1,215 questions, each repeated 12
+# times, on the corpus with Hugging Face pages) from the source its run pinned, so its logged search reward compares
+# with that run's (0.52 over its first 40 steps, 0.76 over steps 240-279). Pure OPD, 8 prompts x 32 rollouts per step.
+# 1 training node: TP 1 x DP 8, 128k tokens per GPU for the 128k search episodes, about 2 min of training per step
+# against the 4-7 min per step of the 4B terminal runs' rollouts, so rollout limits the step rate. The 2 rollout nodes'
+# 16 GPUs: 13 engines, 1 terminal and 2 search teacher servers. Search samples are mostly tool output, which the teacher
+# scores, so the search teacher does about 60% of the scoring (smoke_mopd_4b: ~40k tokens per search sample, ~23k per
+# terminal one). The terminal sandboxes on the jupiter128 podman fleet, the search services (the judge on a Holmes GPU,
+# 32 search + 32 terminal replicas on Jupiter CPUs) as tasks of the experiment. Validated at smoke size by
+# smoke_mopd_4b.yaml (bc-rl-1131, one server per teacher).
+#   python examples/tmax/beaker/submit.py examples/tmax_mopd/configs/prod_3node_mopd_4b.yaml
+exp_name: mopd_prod3node_4b
+model_name: Qwen3.5-4B-tmax-template          # hamishivi/Qwen3.5-4B
+terminal_teacher: tmax-4b                     # allenai/tmax-4b
+search_teacher: search-4b-bcrl-v11-step279    # search_prod4node_4b_bcrl_v11_high8h, HF snapshot step_279
+search_fraction: 0.5
+sandbox_backend: gateway                      # terminal containers on the fleet behind beaker.gateway_registry
+prime_rl_source: /weka/oe-adapt-default/shashankg/miles_search/prime-rl-sources/a5fcb924645d9bd8f326efd5087c8de6447c83fe17c6d07c36e99ee736d30a37/source
+prime_rl_config: configs/experiments/search-agent-bc-rl-v1-1-fp32-lr5e-7/rl.toml
+num_nodes: 3
+num_gpus_per_node: 8
+async_rollout_gpus: 13                        # the last 2 nodes' 16 GPUs, less the 3 teacher servers'
+terminal_teacher_gpus: 1
+search_teacher_gpus: 2
+rollout_batch_size: 8
+n_samples_per_prompt: 32
+num_rollout: 500
+async_max_concurrent_samples: 512             # 2 batches in flight
+sandbox_start_concurrency: 64                 # concurrent container starts on the fleet, rollout-wide
+save_interval: 10
+hf_snapshot_every: 20
+extra_args: "--log-probs-backend fused --distributed-timeout-minutes 120 --sglang-watchdog-timeout 1800"
+model_dir: /weka/nora-default/shashankg/miles_tmax_v2/models
+data_dir: /weka/nora-default/shashankg/miles_tmax_v2/datasets
+output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+dump_training_data: true
+wandb_project: oe-general-agents
+wandb_entity: ai2-llm
+
+beaker:
+  launcher: examples/tmax_mopd/run_mopd_qwen3_5.py
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: high                              # as the search prod run; with an 8 h minimum runtime
+  min_runtime: 8h
+  retries: 10
+  nodes: 3
+  gpus: 8
+  shared_memory: 512GiB
+  image: beaker:shashankg/tmax-miles-train-d0831a475b  # smoke: smoke_mopd_4b.yaml
+  keep_last_n_checkpoints: 3
+  # The jupiter128 fleet's head registry (the private fleet has been down since 2026-11-05); at most 256 terminal
+  # episodes run at once (half of 512 in flight).
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-jupiter128-20261105.sqlite3
+  gateway_min_replicas: 32
+  env:
+    NCCL_DEBUG: WARN
+    MILES_SESSION_REQUEST_TIMEOUT_S: 600         # collect samples: wait up to 10 min instead of 2 (search's 128k)
+  search_services: {}                         # Prime-RL's services at its run.yaml's counts

@@ -271,7 +271,8 @@
        "examples/swe-agent-harbor-docker",
        "examples/tmax",
        "examples/tmax/beaker",
-       "examples/tmax-search"
+       "examples/tmax-search",
+       "examples/tmax-mopd"
       ]
      },
      {
