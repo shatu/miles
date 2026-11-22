@@ -102,6 +102,54 @@ What the smoke's samples show, per domain:
 - **Teacher load.** Search samples are mostly tool output, which the teacher scores. The search teacher therefore
   does about 60% of the scoring, and the prod config gives it two servers to the terminal teacher's one.
 
+## Prod run
+
+`prod_3node_mopd_4b_urgent.yaml`, Beaker `01M7VTAJ4BW8HY92REJKW87AEN`, W&B `ai2-llm/oe-general-agents` run
+`mopd_prod3node_4b_urgent_20261120_062850`. It ran 2026-11-20 06:29 UTC to 2026-11-21 23:03 UTC and reached step 227.
+It was stopped there to investigate gradient spikes and evaluate checkpoints. Its checkpoints are `iter_0000199/209/219`
+and the HF snapshots `hf/step_{19,39,...,219}`.
+
+The first submission, `prod_3node_mopd_4b.yaml` at priority high (`01M7VJDZ5AG2X0PHKFDEZ2JC5T`), lost its judge to an
+immediate-priority job 45 minutes in. Preemption propagation then restarted every task except the judge, which Beaker
+never recreated, so it was resubmitted at priority urgent.
+
+**Preemptions.** About 8 h past its minimum runtime, Holmes preempted the run several times. Losing a training node
+restarts the training replicas from the last checkpoint, at most 10 steps back, after a wait for three free nodes
+(up to 3.5 h). The judge was preempted once more: at priority urgent, Beaker did recreate it, after about an hour in the
+queue. Each judge preemption stops training, because the judge is a critical service.
+
+**Training, steps 0-129.** About 5-9 minutes per step, set by the rollouts: one training node trains a step in about
+2 minutes. The per-token gap to the teachers fell to about 0.01. Steps 8-10, 54-59 and 82 showed the known outlier
+spikes of KL to the base model, harmless under pure OPD.
+
+| Steps | Terminal solved | Terminal KL to teacher | Search judged correct | Search KL to teacher |
+|---|---|---|---|---|
+| 0-39 | 0.51 | 0.21 -> 0.05 | 0.61 | 0.06 -> 0.02 |
+| 40-79 | 0.60 | 0.04 -> 0.03 | 0.71 | 0.02 |
+| 80-129 | 0.63 | 0.02 | 0.68 | 0.01 |
+
+Greedy TBlite of `hf/step_99` (step 100, the harness of the TMax evals, `01M7XP5PEFBMF2FR6W6GD7VEBR`): pass@1 0.450,
+pass@5 0.610, the same as `allenai/tmax-4b`. The 9B-to-4B OPD run had 0.438 / 0.680 at step 100.
+
+**Gradient spikes from step 130.** Grad norm reached 650 at step 130 (policy loss -0.19, against about 0.005
+usually), 121 at step 141 and 34 at step 194. From step 180 on, 11 of 48 steps were above 8. Terminal dropped to
+0.44-0.46 for steps 135-149, then swung between 0.48 and 0.69. Search stayed at 0.58-0.84.
+
+The cause is in Miles' DPPO-TV loss, `-A * r * M` with `r = pi/mu` and no ratio clip (`compute_dppo_tv_policy_loss`).
+Its mask zeroes only tokens that leave the trust region and keep moving away. Take a token the teacher rejects
+(advantage down to about -40) that the rollout sampled at very low probability. If the current policy now rates it
+higher, the update pulls it back, so it stays unmasked, and `r` can be as large as about 1e5: a rollout log-prob of
+-17 against a current -5 gives `r = e^12`. A handful of such tokens set the gradient's direction. Clipping it to norm
+1.0 then applies a full-size update in that direction. The batches' inputs were normal: no teacher log-prob gap above
+20 nats, no non-finite log-probs, largest advantage 41.9.
+
+Fixes, none implemented yet:
+- **Ratio mask:** give no gradient to tokens with `r` above a cap, for example 5.
+- **Weight truncation:** cap the weight at `min(r, C)`, as truncated importance sampling does.
+- **Either of these plus a lower learning rate.**
+
+Miles' `--use-tis` does not combine with DPPO-TV, which needs `--use-rollout-logprobs`.
+
 ## Open questions
 
 - **The mix.** If the logged search reward (`rollout/search/judge/judge_answer_mean`) falls below where the teacher's
