@@ -1,14 +1,15 @@
 """Check SWE tasks in their sandboxes before training on them: the unchanged repository scores 0, the fix scores 1.
 
-For every task of a TMax-format dataset whose task directories carry ``solution/`` (convert_r2e_gym.py), two fresh
-sandboxes through tmax_sandbox, configured by the training env vars (``TMAX_SANDBOX_BACKEND=gateway`` with
-``TMAX_GATEWAY_URL``, or podman with ``TMAX_DOCKER_HOST``):
+For every task of a TMax-format dataset whose task directories carry ``solution/`` (convert_r2e_gym.py,
+convert_swe_rebench_v2.py), two fresh sandboxes through tmax_sandbox, configured by the training env vars
+(``TMAX_SANDBOX_BACKEND=gateway`` with ``TMAX_GATEWAY_URL``, or podman with ``TMAX_DOCKER_HOST``):
 
-1. noop: after the task's ``environment/setup.sh`` ran, check what it promises (``/r2e_tests`` gone, the fix commit
-   unreachable from ``/testbed/.git``, the shell starting in ``/testbed``), time a second ``git gc`` as an estimate
-   of the setup's cost, and submit the repository as is: the reward must be 0.
-2. gold: write the fix commit's non-test files (``solution/files.json``) into ``/testbed`` and submit: the reward
-   must be 1.
+1. noop: after the task's ``environment/setup.sh`` ran, check what it promises (``solution/meta.json``'s
+   ``hidden_paths`` gone, by default ``/r2e_tests``; its ``fix_commit``, if any, unreachable; no git refs left; the
+   shell starting in its ``workdir``, by default ``/testbed``), time a second ``git gc`` as an estimate of the
+   setup's cost, and submit the repository as is: the reward must be 0.
+2. gold: apply the fix (``solution/files.json``: the fix commit's non-test files; or ``solution/fix.patch``, applied
+   with ``git apply``) in the workdir and submit: the reward must be 1.
 
 One JSON line per task goes to ``--out`` (``ok`` = both rewards right and every check passed), with the start and
 test times and score.py's mismatches; tasks already there are skipped, so a rerun resumes (``--retry-errors`` also
@@ -43,9 +44,9 @@ import tmax_sandbox  # noqa: E402
 logger = logging.getLogger("validate_swe_tasks")
 
 _PROBE = """
-test -e /r2e_tests && echo r2e_tests=present || echo r2e_tests=absent
-cd /testbed || exit 1
-git cat-file -e {fix}^{{commit}} 2>/dev/null && echo fix_commit=present || echo fix_commit=absent
+for p in {hidden}; do test -e "$p" && echo hidden_present=$p; done
+cd {workdir} || exit 1
+{fix_check}
 echo refs=$(git for-each-ref | wc -l)
 echo head=$(git rev-parse HEAD)
 echo history=$(git rev-list --count HEAD)
@@ -62,12 +63,16 @@ def make_sandbox(image: str, task_dir: str) -> tmax_sandbox.SandboxBase:
     return tmax_sandbox.TmaxSandbox(image=image, task_dir=task_dir)
 
 
-def _gold_tar(files: dict) -> bytes:
+def _workdir(meta: dict) -> str:
+    return meta.get("workdir", "/testbed")
+
+
+def _gold_tar(files: dict, workdir: str) -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w") as tar:
         for path, content in files.items():
             data = content.encode()
-            info = tarfile.TarInfo(f"testbed/{path}")
+            info = tarfile.TarInfo(f"{workdir.strip('/')}/{path}")
             info.size, info.mode = len(data), 0o644
             tar.addfile(info, io.BytesIO(data))
     return buffer.getvalue()
@@ -91,10 +96,22 @@ async def _noop(record: dict, image: str, task_dir: str, meta: dict) -> None:
     t0 = time.monotonic()
     async with make_sandbox(image, task_dir) as box:
         record["noop_start_s"] = round(time.monotonic() - t0, 1)
-        probe = await box._exec(_PROBE.format(fix=shlex.quote(meta["fix_commit"])), timeout_s=600)
+        fix = meta.get("fix_commit")
+        fix_check = (
+            f"git cat-file -e {shlex.quote(fix)}^{{commit}} 2>/dev/null && echo fix_commit=present || echo fix_commit=absent"
+            if fix
+            else ""
+        )
+        hidden = " ".join(shlex.quote(p) for p in meta.get("hidden_paths", ["/r2e_tests"]))
+        probe = await box._exec(
+            _PROBE.format(hidden=hidden, workdir=shlex.quote(_workdir(meta)), fix_check=fix_check), timeout_s=600
+        )
+        record["hidden_present"] = []
         for line in probe.stdout.splitlines():
             key, _, value = line.partition("=")
-            if key and value:
+            if key == "hidden_present":
+                record["hidden_present"].append(value)
+            elif key and value:
                 record[key] = value
         observation, _ = await box.bash("pwd")
         record["start_dir"] = observation.split("\n")[0]
@@ -105,14 +122,23 @@ async def _noop(record: dict, image: str, task_dir: str, meta: dict) -> None:
             record["noop_score"] = await _score_details(box)
 
 
-async def _gold(record: dict, image: str, task_dir: str, gold: dict) -> None:
+async def _gold(record: dict, image: str, task_dir: str, meta: dict, gold: dict | str) -> None:
     t0 = time.monotonic()
+    workdir = shlex.quote(_workdir(meta))
     async with make_sandbox(image, task_dir) as box:
         record["gold_start_s"] = round(time.monotonic() - t0, 1)
-        if gold["write"]:
-            await box._put_archive(_gold_tar(gold["write"]))
-        if gold["delete"]:
-            await box._exec("cd /testbed && rm -f -- " + " ".join(shlex.quote(p) for p in gold["delete"]))
+        if isinstance(gold, str):  # a patch
+            await box._put_archive(tmax_sandbox._tar_file("/tmp/.validate_fix.patch", gold, 0o644))
+            applied = await box._exec(
+                f"cd {workdir} && git apply /tmp/.validate_fix.patch; _rc=$?; rm -f /tmp/.validate_fix.patch; exit $_rc"
+            )
+            if applied.exit_code != 0:
+                record["gold_apply_failed"] = applied.stderr[-500:]
+        else:
+            if gold["write"]:
+                await box._put_archive(_gold_tar(gold["write"], _workdir(meta)))
+            if gold["delete"]:
+                await box._exec(f"cd {workdir} && rm -f -- " + " ".join(shlex.quote(p) for p in gold["delete"]))
         t1 = time.monotonic()
         record["gold_reward"] = await box.run_tests()
         record["gold_test_s"] = round(time.monotonic() - t1, 1)
@@ -123,11 +149,12 @@ async def _gold(record: dict, image: str, task_dir: str, gold: dict) -> None:
 async def check_task(task_id: str, image: str, task_dir: str) -> dict:
     solution = Path(task_dir) / "solution"
     meta = json.loads((solution / "meta.json").read_text())
-    gold = json.loads((solution / "files.json").read_text())
+    patch = solution / "fix.patch"
+    gold = patch.read_text() if patch.exists() else json.loads((solution / "files.json").read_text())
     record = {"task_id": task_id, "repo": meta.get("repo"), "image": image}
     steps = {
         "noop": lambda: _noop(record, image, task_dir, meta),
-        "gold": lambda: _gold(record, image, task_dir, gold),
+        "gold": lambda: _gold(record, image, task_dir, meta, gold),
     }
     for name, step in steps.items():
         try:
@@ -137,11 +164,12 @@ async def check_task(task_id: str, image: str, task_dir: str) -> dict:
     checks = {
         "noop_reward": record.get("noop_reward") == 0,
         "gold_reward": record.get("gold_reward") == 1,
-        "r2e_tests_hidden": record.get("r2e_tests") == "absent",
-        "fix_commit_gone": record.get("fix_commit") == "absent",
+        "hidden_paths_gone": "refs" in record and not record.get("hidden_present"),
         "no_refs": record.get("refs") == "0",
-        "start_dir": record.get("start_dir") == "/testbed",
+        "start_dir": record.get("start_dir") == _workdir(meta),
     }
+    if meta.get("fix_commit"):
+        checks["fix_commit_gone"] = record.get("fix_commit") == "absent"
     record["failed_checks"] = [k for k, v in checks.items() if not v]
     record["ok"] = not record["failed_checks"]
     record["infra_error"] = any(k.endswith("_error") for k in record)
