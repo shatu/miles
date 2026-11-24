@@ -41,11 +41,11 @@ Validated end to end on B300s (Beaker `ai2/holmes`):
 | `tmax_gateway.py` | The gateway backend: containers on a LiteRegistry podman fleet through literegistry's own client, after open-instruct's `GatewayBackend` |
 | `generate.py` | Reward function (`None` drops the group), the generate function that adds an SGLang OPD teacher's log-probs, and pure OPD's reward post-process |
 | `tmax_metrics.py` | Per-rollout W&B metrics open-instruct logs: episodes and tools, solve rates before the filter, trained-sample lengths and advantages |
-| `tmax_prompts.py` | open-instruct's system prompt |
+| `tmax_prompts.py` | open-instruct's system prompt, and the vanillux instance template of every user turn |
 | `configs/` | Experiment configs: open-instruct's production recipe on one node (`prod_1node.yaml`) and on its 4 nodes (`prod_4node.yaml`), and 4-GPU smoke tests (`smoke_2node.yaml` spans 2 nodes, `smoke_gateway.yaml` uses the podman fleet, `smoke_opd*.yaml` distill) |
 | `beaker/` | `submit.py` (config -> Beaker job, pinned to a commit), the job's entrypoint, open-instruct's vendored podman bring-up, and the registry mirror tooling |
 | `docker/` | `build_train_image.sh`: the training image, built from `docker/Dockerfile` at `HEAD` and uploaded to Beaker under its commit |
-| `tools/` | `watch_run.py` (one line per step, slow sync or failure of a running Beaker experiment) and `check_samples.py` (trained samples vs episode traces) |
+| `tools/` | `watch_run.py` (one line per step, slow sync or failure of a running Beaker experiment) and `check_samples.py` (trained samples vs episode traces); for SWE tasks, `fetch_image_files.py`, `convert_r2e_gym.py` (+ `r2e_gym_score.py`) and `validate_swe_tasks.py` ([SWE tasks](#swe-tasks-r2e-gym)) |
 
 ## How an episode runs
 
@@ -105,6 +105,28 @@ up open-instruct's podman setup on every node and runs `prepare` + `execute`. Ea
 (`<exp_name>_YYYYMMDD_HHMMSS`), and its Beaker retries resume from that run's checkpoints. Everything else (the
 `beaker:` keys, multi-node layout, images, pull credentials and mirrors, checkpoints, watching a run, failures) is in
 [beaker/README.md](/examples/tmax/beaker).
+
+### SWE tasks (R2E-Gym)
+
+The same environment runs SWE-bench-style repair tasks: `dataset:` takes any local directory in the TMax dataset
+layout, and a task's `environment/setup.sh` prepares its container before the first command. R2E-Gym-Subset (the
+DeepSWE training set; none of its 10 repositories are in SWE-bench Verified) is built and checked with three tools,
+each documented in its docstring:
+
+```bash
+# 1. Each image's hidden tests and test command, read from its layers (or from running containers: --via-sandbox).
+python examples/tmax/tools/fetch_image_files.py --images-from <R2E-Gym-Subset dir> --out <files> --gateway <url>
+# 2. Tasks: the issue in the TMax prompt template, setup.sh, tests/ (test.sh, run_tests.sh, score.py), solution/.
+python examples/tmax/tools/convert_r2e_gym.py --source-dir <R2E-Gym-Subset dir> --image-files <files> --out <dataset>
+# 3. In sandboxes: the unchanged repository must score 0, the fix commit 1, the tests and future history be hidden.
+TMAX_SANDBOX_BACKEND=gateway TMAX_GATEWAY_URL=<url> \
+    python examples/tmax/tools/validate_swe_tasks.py <dataset> --out results.jsonl --concurrency 32
+python examples/tmax/tools/validate_swe_tasks.py <dataset> --out results.jsonl --export <validated dataset>
+```
+
+The user turn is the vanillux instance template every TMax prompt uses (`tmax_prompts.render_instance`), which
+Vanillux2Agent also renders SWE-bench Verified tasks with, and the shell starts in `/testbed` as there.
+`configs/smoke_r2e_4b_jupiter.yaml` trains on a validated sample.
 
 ## Mapping from open-instruct
 
