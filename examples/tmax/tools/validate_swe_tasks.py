@@ -211,7 +211,7 @@ def export(dataset_dir: Path, results: Path, out: Path) -> None:
     (out / "README.md").write_text(
         f"# {dataset_dir.name}, validated\n\n{len(rows)} tasks of `{dataset_dir}` that passed every check of "
         f"`examples/tmax/tools/validate_swe_tasks.py` in `{results}` (the unchanged repository scores 0, the fix 1, "
-        "hidden tests and future history gone, shell in /testbed).\n"
+        "hidden paths and future history gone, shell in the task's workdir).\n"
     )
     print(f"exported {len(rows)} tasks to {out}")
 
