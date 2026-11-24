@@ -1,10 +1,11 @@
-# rl_r2e_4b_2node_timeout600_nominruntime.yaml on SWE-rebench V2 instead of R2E-Gym: the validated Python tasks of
-# nebius/SWE-rebench-V2 labelled clean (tools/convert_swe_rebench_v2.py + validate_swe_tasks.py), real GitHub issues
-# from about 600 repositories, none in SWE-bench Verified. Same recipe, layout, 600 s session-request timeout, no
-# min_runtime, priority urgent.
+# rl_r2e_4b_2node_timeout600_nominruntime.yaml on SWE-rebench V2 instead of R2E-Gym: the 1,686 validated Python tasks
+# of nebius/SWE-rebench-V2 labelled clean and difficulty "easy" (tools/convert_swe_rebench_v2.py +
+# validate_swe_tasks.py; real GitHub issues, none from SWE-bench Verified's repositories). Easy only: in smoke
+# 01M86GWK4DWGSBN3MF0986TQ4F base Qwen3.5-4B solved 1% of its first all-difficulty V2 episodes (7% over the run),
+# its early solves on easy tasks. Same recipe, layout, 600 s session-request timeout, no min_runtime, priority urgent.
 exp_name: tmax_rl_v2_4b_2node_nominruntime
 model_name: Qwen3.5-4B-tmax-template
-dataset: /weka/nora-default/shashankg/miles_tmax_v2/datasets/swe-rebench-v2-py-tmax-validated
+dataset: /weka/nora-default/shashankg/miles_tmax_v2/datasets/swe-rebench-v2-py-easy-tmax-validated
 sandbox_backend: gateway
 num_nodes: 2
 num_gpus_per_node: 8

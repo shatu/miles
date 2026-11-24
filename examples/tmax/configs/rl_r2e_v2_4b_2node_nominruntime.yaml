@@ -1,9 +1,10 @@
-# rl_r2e_4b_2node_timeout600_nominruntime.yaml on R2E-Gym and SWE-rebench V2 together: the two validated datasets
-# merged by tools/merge_task_datasets.py in their natural proportions (the launcher shuffles prompts). Same recipe,
-# layout, 600 s session-request timeout, no min_runtime, priority urgent.
+# rl_r2e_4b_2node_timeout600_nominruntime.yaml on R2E-Gym and SWE-rebench V2's easy tasks together: the 4,456
+# validated R2E-Gym tasks and the 1,686 of rl_v2_4b_2node_nominruntime.yaml, merged by tools/merge_task_datasets.py
+# in their natural proportions (the launcher shuffles prompts). Same recipe, layout, 600 s session-request timeout,
+# no min_runtime, priority urgent.
 exp_name: tmax_rl_r2e_v2_4b_2node_nominruntime
 model_name: Qwen3.5-4B-tmax-template
-dataset: /weka/nora-default/shashankg/miles_tmax_v2/datasets/r2e-v2-tmax-validated
+dataset: /weka/nora-default/shashankg/miles_tmax_v2/datasets/r2e-v2easy-tmax-validated
 sandbox_backend: gateway
 num_nodes: 2
 num_gpus_per_node: 8
