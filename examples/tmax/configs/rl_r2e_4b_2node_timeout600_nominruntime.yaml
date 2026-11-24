@@ -1,0 +1,70 @@
+# rl_r2e_4b_2node_timeout600.yaml without min_runtime (and without preemptible, which Beaker no longer takes), so
+# Beaker can place it on unallocated Holmes capacity; queued next to its twin, whichever starts first is kept.
+# rl_r2e_4b_2node.yaml with the session-request timeout raised from 120 s to 600 s (MILES_SESSION_REQUEST_TIMEOUT_S),
+# as the 4B search, 4B MOPD and 35B-A3B prod runs set it: at 120 s their episodes failed to collect their samples in
+# bursts around weight updates while the head's session servers lagged (search 4B: about 2.5%, 149 groups of 32
+# dropped by step 60; 35B: about a fifth), and none failed at 600 s. Its twin was stopped before it was scheduled.
+# GRPO on the 4,456 validated R2E-Gym-Subset tasks from hamishivi/Qwen3.5-4B: the first SWE RL run.
+# prod_2node_gateway_4b_parallel64.yaml's recipe and layout (the 4B RLVR baseline: 8 prompts x 32 samples, 512
+# episodes in flight, 64k per episode, lr 1e-6, staleness 4, zero-variance filter; 1 training node TP 1 x CP 1 x DP 8,
+# 1 rollout node of 8 SGLang engines) with these differences:
+# - dataset: r2e-gym-subset-tmax-validated (tools/convert_r2e_gym.py + validate_swe_tasks.py) instead of TMax-15k;
+# - tool_call_timeout_s 600: a submit runs R2E's tests (p99 48 s in validation, a few up to 600 s);
+# - sandboxes on podman-jupiter128-20261105 (the parallel64 fleet is down since 2026-11-05);
+# - image tmax-miles-train-d0831a475b, the one both R2E smokes ran on;
+# - num_rollout 300 (about 0.54 epoch of 4,456 tasks at 8 per step; Arctic-SWE's 4B gain on plain R2E-Gym came by
+#   update 340) with HF snapshots every 20 steps for SWE-bench Verified evals.
+# max_steps stays 64, Vanillux2Agent's evaluation budget (71% of the 64k smoke's episodes ended there).
+exp_name: tmax_rl_r2e_4b_2node_timeout600_nominruntime
+model_name: Qwen3.5-4B-tmax-template
+dataset: /weka/nora-default/shashankg/miles_tmax_v2/datasets/r2e-gym-subset-tmax-validated
+sandbox_backend: gateway
+num_nodes: 2
+num_gpus_per_node: 8
+async_rollout_gpus: 8
+rollout_batch_size: 8
+n_samples_per_prompt: 32
+num_rollout: 300
+max_seq_len: 67584
+rollout_max_response_len: 16384
+max_steps: 64
+tool_call_timeout_s: 600                      # a submit's test run
+filter_zero_std: true
+max_weight_staleness: 4
+async_max_concurrent_samples: 512
+async_data_buffer_capacity_factor: 4
+tensor_model_parallel_size: 1
+context_parallel_size: 1
+max_tokens_per_gpu: 67584
+optimizer_cpu_offload: false
+sglang_mem_fraction_static: 0.8
+sandbox_start_concurrency: 64
+start_failure: drop
+save_interval: 5
+hf_snapshot_every: 20
+extra_args: "--log-probs-backend fused --distributed-timeout-minutes 120 --sglang-watchdog-timeout 1800"
+model_dir: /weka/nora-default/shashankg/miles_tmax_v2/models
+data_dir: /weka/nora-default/shashankg/miles_tmax_v2/datasets
+output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+dump_training_data: true
+wandb_project: oe-general-agents
+wandb_entity: ai2-llm
+
+beaker:
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: urgent
+  retries: 10
+  nodes: 2
+  gpus: 8
+  shared_memory: 512GiB
+  image: beaker:shashankg/tmax-miles-train-d0831a475b
+  dockerhub_username: shashankg209
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-jupiter128-20261105.sqlite3
+  gateway_min_replicas: 64
+  keep_last_n_checkpoints: 3
+  env:
+    NCCL_DEBUG: WARN
+    MILES_SESSION_REQUEST_TIMEOUT_S: 600       # collect samples: wait up to 10 min instead of 2
