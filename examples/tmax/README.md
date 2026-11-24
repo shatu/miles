@@ -103,7 +103,7 @@ up open-instruct's podman setup on every node and runs `prepare` + `execute`. Ea
 `beaker:` keys, multi-node layout, images, pull credentials and mirrors, checkpoints, watching a run, failures) is in
 [beaker/README.md](beaker/README.md).
 
-### SWE tasks (R2E-Gym)
+### SWE tasks (R2E-Gym, SWE-rebench V2)
 
 The same environment runs SWE-bench-style repair tasks: `dataset:` takes any local directory in the TMax dataset
 layout, and a task's `environment/setup.sh` prepares its container before the first command. R2E-Gym-Subset (the
@@ -121,9 +121,19 @@ TMAX_SANDBOX_BACKEND=gateway TMAX_GATEWAY_URL=<url> \
 python examples/tmax/tools/validate_swe_tasks.py <dataset> --out results.jsonl --export <validated dataset>
 ```
 
+SWE-rebench V2's clean Python tasks (real issues from about 600 repositories, none in SWE-bench Verified) need no
+image files: the dataset carries the PR's test patch and test command.
+
+```bash
+python examples/tmax/tools/convert_swe_rebench_v2.py --source-dir <SWE-rebench-V2 dir> --out <dataset>
+# then validate_swe_tasks.py as above; merge validated datasets for a mixed run:
+python examples/tmax/tools/merge_task_datasets.py --out <merged> <r2e validated> <v2 validated>
+```
+
 The user turn is the vanillux instance template every TMax prompt uses (`tmax_prompts.render_instance`), which
-Vanillux2Agent also renders SWE-bench Verified tasks with, and the shell starts in `/testbed` as there.
-`configs/smoke_r2e_4b_jupiter.yaml` trains on a validated sample.
+Vanillux2Agent also renders SWE-bench Verified tasks with, and the shell starts in the repository (`/testbed` for
+R2E-Gym, as SWE-bench Verified's harness). `configs/smoke_r2e_4b_jupiter.yaml` trains on a validated sample;
+`configs/rl_*_4b_2node*.yaml` are the runs.
 
 ## Mapping from open-instruct
 
