@@ -55,6 +55,9 @@ Args:
   --async-data-buffer-capacity-factor: fully-async only; finished groups buffered ahead of training, in batches
       (default: 2). open-instruct's --async_steps 4 lets generation run 4 steps ahead.
   --optimizer-cpu-offload: keep Adam state in host RAM (default: on; turn off on 80GB+ GPUs).
+  --dataset: the tasks: a Hugging Face dataset repo, downloaded to <data-dir>/<name>, or a local directory in its
+      layout (data/train-00000-of-00001.parquet + task-data.tar.gz), e.g. one written by
+      tools/convert_r2e_gym.py (default: allenai/tmax-15k-open-instruct).
   --num-prompts: keep only the first N prompts, for smoke tests (default: all).
   --start-failure: zero | drop, for a sandbox that never starts (default: zero, open-instruct's behavior).
   --episode-timeout-s: wall-clock cap per episode, 0 for none (default: 0).
@@ -215,6 +218,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     async_max_concurrent_samples: int = 0  # 0 keeps Miles' default of one training batch
     async_data_buffer_capacity_factor: float = 2.0
     sglang_mem_fraction_static: float = 0.7
+    # A Hugging Face dataset repo, or an absolute path to a local dataset directory in the same layout.
+    dataset: str = _DATASET
     num_prompts: int = 0
     max_steps: int = 64
     # podman: containers on podman daemons this job runs; gateway: on a LiteRegistry podman fleet (tmax_gateway.py).
@@ -358,7 +363,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 
     @property
     def dataset_dir(self) -> str:
-        return f"{self.data_dir}/{_DATASET.split('/')[1]}"
+        if self.dataset.startswith("/"):
+            return self.dataset
+        return f"{self.data_dir}/{self.dataset.split('/')[1]}"
 
     @property
     def task_data_dir(self) -> str:
@@ -374,7 +381,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 @command_utils.dataclass_cli
 def prepare(args: ScriptArgs):
     U = args.create_backend()
-    U.hf_download_dataset(_DATASET, data_dir=args.data_dir)
+    if not args.dataset.startswith("/"):
+        U.hf_download_dataset(args.dataset, data_dir=args.data_dir)
     if not Path(args.task_data_dir).exists():
         U.exec_command_cpu(
             f"mkdir -p {args.task_data_dir}.tmp && "
