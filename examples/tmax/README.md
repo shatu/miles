@@ -52,7 +52,8 @@ production script (`--tool_call_format_error_feedback` off, `SWERL_RESET_FAILURE
 1. `agentic_tool_call.generate` opens a TITO session and calls `tmax_agent_function.run` in a process of its own.
 2. `run` starts a container from `metadata.image` (`sleep infinity`, a 4 GB memory limit requested) on one of the podman
    daemons, uploads the task's `environment/seeds`, and installs a wrapper that keeps `cwd` and exported variables
-   across commands. A failed start is retried 5 times (1-16 s backoff); a daemon that fails to connect is benched
+   across commands. A task with an `environment/setup.sh` runs it next, before the first command (not in
+   open-instruct: SWE tasks use it to hide their image's tests and set the start directory). A failed start is retried 5 times (1-16 s backoff); a daemon that fails to connect is benched
    for 300-330 s. If it never starts, the episode scores 0 and stays in its group, through a one-token turn
    (`start_failure: drop` drops the group instead).
 3. Up to `max_steps` (64) bash calls: a chat completion with the single `bash` tool through the session server,

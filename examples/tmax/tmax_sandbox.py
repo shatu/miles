@@ -21,6 +21,12 @@ Behavior kept identical to open-instruct, since it shapes the reward:
 * a container that vanished or stopped (not OOM) mid-episode is recreated once and the command retried,
   losing its state, as DockerBackend._restart_and_retry_exec does.
 
+Not in open-instruct: a task directory may hold ``environment/setup.sh``, which runs once in a fresh container before
+the policy's first command (and again in a recreated one). It prepares tasks whose image is not ready as is, e.g. a
+SWE task that must remove the image's baked-in hidden tests and the future commits from the repository's git history.
+It runs as root with ``TMAX_CWD_FILE`` naming the file that holds the shell's start directory (``/app`` unless the
+script writes another), is deleted after it runs, and a non-zero exit fails the start like any other start error.
+
 Under ``--custom-agent-function-mode subproc`` (the default) each episode runs in
 a process of its own, so the limits shared across episodes (start and exec
 concurrency, one pull per image, sandboxes per node) are file locks scoped to the
@@ -44,6 +50,7 @@ Env vars:
   TMAX_SANDBOX_MEM_LIMIT    per-container memory limit (default: 4g).
   TMAX_COMMAND_TIMEOUT_S    per-bash-command timeout (default: 120).
   TMAX_TEST_TIMEOUT_S       verifier timeout (default: 600, open-instruct's floor).
+  TMAX_SETUP_TIMEOUT_S      timeout of a task's environment/setup.sh (default: 600).
   TMAX_START_CONCURRENCY    concurrent container starts per node (default: 16).
   TMAX_EXEC_CONCURRENCY     concurrent execs per node (default: 128).
   TMAX_REGISTRY_USERNAME /  Docker Hub pull credentials. Always sent explicitly, so the
@@ -113,6 +120,8 @@ _NODE_SLOT_POLL_S = 0.5
 _BASH_WRAPPER_PATH = "/tmp/.swerl_vanillux_bash_wrapper.sh"
 _BASH_CWD_PATH = "/tmp/.swerl_vanillux_cwd"
 _BASH_ENV_PATH = "/tmp/.swerl_vanillux_env"
+_TASK_SETUP_PATH = "/tmp/.tmax_task_setup.sh"
+_SETUP_LOG_TAIL_CHARS = 2_000
 _BASH_WRAPPER = f"""#!/bin/bash
 set -a
 source {shlex.quote(_BASH_ENV_PATH)} 2>/dev/null || true
@@ -160,6 +169,7 @@ class _Settings:
     mem_limit: str
     command_timeout_s: int
     test_timeout_s: int
+    setup_timeout_s: int
     start_concurrency: int
     exec_concurrency: int
     registry_auth: dict[str, str]
@@ -182,6 +192,7 @@ def _settings() -> _Settings:
         mem_limit=os.getenv("TMAX_SANDBOX_MEM_LIMIT", "4g"),
         command_timeout_s=int(os.getenv("TMAX_COMMAND_TIMEOUT_S", "120")),
         test_timeout_s=int(os.getenv("TMAX_TEST_TIMEOUT_S", "600")),
+        setup_timeout_s=int(os.getenv("TMAX_SETUP_TIMEOUT_S", "600")),
         start_concurrency=int(os.getenv("TMAX_START_CONCURRENCY", "16")),
         exec_concurrency=int(os.getenv("TMAX_EXEC_CONCURRENCY", "128")),
         registry_auth=(
@@ -371,6 +382,23 @@ class SandboxBase:
             f": > {shlex.quote(_BASH_ENV_PATH)}"
         )
         await self._put_archive(_tar_file(_BASH_WRAPPER_PATH, _BASH_WRAPPER))
+        await self._run_task_setup()
+
+    async def _run_task_setup(self) -> None:
+        """Run the task's environment/setup.sh, if it has one, before the policy's first command."""
+        setup_path = os.path.join(self._task_dir, "environment", "setup.sh")
+        if not os.path.isfile(setup_path):
+            return
+        with open(setup_path) as f:
+            await self._put_archive(_tar_file(_TASK_SETUP_PATH, f.read()))
+        script = shlex.quote(_TASK_SETUP_PATH)
+        result = await self._exec(
+            f"TMAX_CWD_FILE={shlex.quote(_BASH_CWD_PATH)} bash {script}; _rc=$?; rm -f {script}; exit $_rc",
+            timeout_s=_settings().setup_timeout_s,
+        )
+        if result.exit_code != 0:
+            output = f"{result.stdout}\n{result.stderr}".strip()[-_SETUP_LOG_TAIL_CHARS:]
+            raise SandboxInfraError(f"task setup failed (exit_code={result.exit_code}): {output}")
 
     async def _release(self) -> None:
         raise NotImplementedError
