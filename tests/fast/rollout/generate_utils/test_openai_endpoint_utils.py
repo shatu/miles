@@ -4,21 +4,23 @@ The sample-assembly and TITO multi-turn merge tests live in
 tests/fast/rollout/session/test_samples.py (assembly) and
 test_samples_codec.py (wire codec), next to the functions.
 The collect_samples tests here lock the client's HTTP behavior deltas vs the
-old collect_records path: single POST with no retries, non-2xx raises with the
-body text, timeout raises (instead of silently ABORTing), and the session
-DELETE is attempted on every path.
+old collect_records path: bounded transport retries, non-2xx raises with the
+body text, and DELETE acknowledges only a successfully decoded payload.
 """
 
 import asyncio
 import mmap
 import socket
 import threading
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
+import aiohttp
 import httpx
 import numpy as np
 import pytest
 
+from miles.rollout.generate_utils.collection_transport import CollectionTransport
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
 from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS,
@@ -112,12 +114,22 @@ async def test_create_distributes_sessions_across_port_range(monkeypatch):
             return {"session_id": f"session-{len(calls)}"}
         return {}
 
-    async def fake_post_bytes(url, payload, *, timeout):
+    async def fake_post_bytes(url, payload, *, timeout, client=None):
         calls.append(("post_bytes", url))
         return encode_samples([], {}, "no_records")
 
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_buffer_no_retry", fake_post_bytes)
+
+    @asynccontextmanager
+    async def delete(url, **kwargs):
+        calls.append(("delete", url))
+        yield SimpleNamespace(status=204)
+
+    transport = _FakeTransport(SimpleNamespace(delete=delete))
+    monkeypatch.setattr(
+        "miles.rollout.generate_utils.openai_endpoint_utils.collection_transport", lambda _: transport
+    )
 
     ports = [12345, 12346, 12347, 12348]
     args = SimpleNamespace(
@@ -134,6 +146,7 @@ async def test_create_distributes_sessions_across_port_range(monkeypatch):
         chosen_ports.add(port)
 
         await tracer.collect_samples(Sample(), max_seq_len=None)
+        await tracer.acknowledgement
         prefix = f"http://127.0.0.1:{port}"
         assert [url for _, url in calls] == [
             f"{prefix}/sessions",
@@ -317,34 +330,60 @@ def _computed_reply_payload() -> bytes:
     return encode_samples([sample], {"max_trim_tokens": 1}, None)
 
 
+class _FakeTransport:
+    """Stands in for CollectionTransport: admits immediately and records background acknowledgements."""
+
+    def __init__(self, client):
+        self.client = client
+        self.spawned: list[asyncio.Task] = []
+
+    @asynccontextmanager
+    async def admit(self):
+        yield self.client
+
+    def spawn(self, fn):
+        task = asyncio.ensure_future(fn(self.client))
+        self.spawned.append(task)
+        return task
+
+
 class _CollectCalls:
     """Patches the two HTTP primitives collect_samples uses and records order."""
 
     def __init__(self, monkeypatch, *, post_outcome, delete_outcome=None):
         self.calls: list[str] = []
 
-        async def fake_post_bytes(url, payload, *, timeout):
+        async def fake_post_bytes(url, payload, *, timeout, client=None):
             self.calls.append(f"POST {url}")
-            assert payload == {"max_seq_len": 7}
+            assert payload["max_seq_len"] == 7
+            assert isinstance(payload["collection_id"], str)
             if isinstance(post_outcome, Exception):
                 raise post_outcome
             return post_outcome
 
-        async def fake_post(url, payload, action="post"):
-            assert action == "delete"
+        @asynccontextmanager
+        async def delete(url, **kwargs):
             self.calls.append(f"DELETE {url}")
             if isinstance(delete_outcome, Exception):
                 raise delete_outcome
-            return {}
+            yield SimpleNamespace(status=204)
 
+        self.transport = _FakeTransport(SimpleNamespace(delete=delete))
         monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_buffer_no_retry", fake_post_bytes)
-        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+        monkeypatch.setattr(
+            "miles.rollout.generate_utils.openai_endpoint_utils.collection_transport", lambda _: self.transport
+        )
+
+    async def settle(self):
+        """Wait for background acknowledgements, which collect_samples does not await."""
+        await asyncio.gather(*self.transport.spawned)
 
 
 @pytest.mark.asyncio
 async def test_collect_samples_single_post_then_delete(monkeypatch):
     calls = _CollectCalls(monkeypatch, post_outcome=_computed_reply_payload())
     result = await _tracer().collect_samples(Sample(), max_seq_len=7)
+    await calls.settle()
 
     assert calls.calls == [
         "POST http://127.0.0.1:12345/sessions/sid-1/samples",
@@ -384,28 +423,91 @@ async def test_collect_samples_decoding_does_not_block_event_loop(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_collect_samples_non_2xx_raises_with_body_and_still_deletes(monkeypatch):
+async def test_collect_samples_non_2xx_preserves_session(monkeypatch):
     calls = _CollectCalls(monkeypatch, post_outcome=RuntimeError("422: trim_count 2 exceeds allowed=1"))
     with pytest.raises(RuntimeError, match="trim_count 2 exceeds allowed=1"):
         await _tracer().collect_samples(Sample(), max_seq_len=7)
-    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1"
+    await calls.settle()
+    assert not any(call.startswith("DELETE") for call in calls.calls)
 
 
 @pytest.mark.asyncio
-async def test_collect_samples_timeout_raises_and_still_deletes(monkeypatch):
+async def test_collect_samples_timeout_retries_and_preserves_session(monkeypatch):
     # The old collect_records swallowed the timeout and returned empty records
     # (silently ABORTing the sample); the samples path must raise it.
-    calls = _CollectCalls(monkeypatch, post_outcome=asyncio.TimeoutError())
-    with pytest.raises(asyncio.TimeoutError):
+    calls = _CollectCalls(monkeypatch, post_outcome=TimeoutError())
+    with pytest.raises(TimeoutError):
         await _tracer().collect_samples(Sample(), max_seq_len=7)
-    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1"
+    await calls.settle()
+    assert not any(call.startswith("DELETE") for call in calls.calls)
 
 
 @pytest.mark.asyncio
 async def test_collect_samples_delete_failure_is_tolerated(monkeypatch):
-    _CollectCalls(monkeypatch, post_outcome=_computed_reply_payload(), delete_outcome=RuntimeError("delete boom"))
+    calls = _CollectCalls(
+        monkeypatch,
+        post_outcome=_computed_reply_payload(),
+        delete_outcome=aiohttp.ClientConnectionError("delete boom"),
+    )
     result = await _tracer().collect_samples(Sample(), max_seq_len=7)
     assert len(result.samples) == 1
+    await calls.settle()  # the failure is logged, not raised
+    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1"
+
+
+@pytest.mark.asyncio
+async def test_collection_slot_covers_only_the_transfer(monkeypatch):
+    """With one slot, a second collection transfers while the first decodes and both acknowledge late.
+
+    A finished sample keeps producer budget until collect_samples returns, so decode and the
+    DELETE must not hold an admission slot (the FP8 production backlog).
+    """
+    transport = CollectionTransport(1)
+    monkeypatch.setattr(
+        "miles.rollout.generate_utils.openai_endpoint_utils.collection_transport", lambda _: transport
+    )
+    payload = _computed_reply_payload()
+    posts = 0
+    second_transferred = threading.Event()
+
+    async def fake_post_bytes(url, body, *, timeout, client=None):
+        nonlocal posts
+        posts += 1
+        if posts == 2:
+            second_transferred.set()
+        return payload
+
+    def decode(*args, **kwargs):
+        if threading.current_thread() is not threading.main_thread() and posts == 1:
+            # first decode: only finishes if the second transfer got the slot meanwhile
+            assert second_transferred.wait(timeout=2), "decode held the admission slot"
+        return decode_samples_and_merge_input_sample(*args, **kwargs)
+
+    release_ack = asyncio.Event()
+    acked = []
+
+    async def slow_ack(self, client):
+        await release_ack.wait()
+        acked.append(self.session_id)
+
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_buffer_no_retry", fake_post_bytes)
+    monkeypatch.setattr(
+        "miles.rollout.generate_utils.openai_endpoint_utils.decode_samples_and_merge_input_sample", decode
+    )
+    monkeypatch.setattr(OpenAIEndpointTracer, "_acknowledge", slow_ack)
+    first, second = (OpenAIEndpointTracer(router_url="http://127.0.0.1:1", session_id=f"s{i}") for i in range(2))
+    try:
+        async with asyncio.timeout(5):
+            results = await asyncio.gather(
+                first.collect_samples(Sample(), max_seq_len=7), second.collect_samples(Sample(), max_seq_len=7)
+            )
+        assert all(len(r.samples) == 1 for r in results)
+        assert acked == [] and transport._slots._value == 1  # both returned with acknowledgements pending
+        release_ack.set()
+        await asyncio.gather(first.acknowledgement, second.acknowledgement)
+        assert sorted(acked) == ["s0", "s1"] and transport.users == 0
+    finally:
+        await transport.close()
 
 
 # ── post_buffer_no_retry primitive ──
@@ -678,8 +780,9 @@ async def test_collect_samples_v2_payload_carries_metadata_and_decodes_extras(mo
     payload = encode_samples([sample], {"max_trim_tokens": 1}, None, fields=COMPUTED_FIELDS_V2)
 
     seen = []
+    _CollectCalls(monkeypatch, post_outcome=payload)
 
-    async def fake_post_bytes(url, body, *, timeout):
+    async def fake_post_bytes(url, body, *, timeout, client=None):
         seen.append(body)
         return payload
 
@@ -697,7 +800,7 @@ async def test_collect_samples_v2_payload_carries_metadata_and_decodes_extras(mo
     input_sample.metadata = {"env": "keep-me"}
     result = await tracer.collect_samples(input_sample, max_seq_len=7, agent_metadata={"reward": 0.75})
 
-    assert seen == [{"max_seq_len": 7, "metadata": {"reward": 0.75}}]
+    assert seen == [{"max_seq_len": 7, "metadata": {"reward": 0.75}, "collection_id": tracer.collection_id}]
     (decoded,) = result.samples
     assert decoded.reward == 0.75
     assert decoded.metadata == {"env": "keep-me", "leaf": {"node_id": 1}}
@@ -739,3 +842,34 @@ async def test_create_selects_wire_fields_by_session_server_version(monkeypatch)
             args(True, 0.95, 32), evaluation=True, sampling_params=sampling_params(0.95, 32)
         )
     ).samples_wire_fields == COMPUTED_FIELDS
+
+
+@pytest.mark.asyncio
+async def test_collect_retries_same_snapshot_then_acknowledges(monkeypatch):
+    calls = _CollectCalls(monkeypatch, post_outcome=_computed_reply_payload())
+    original = __import__(
+        "miles.rollout.generate_utils.openai_endpoint_utils", fromlist=["post_buffer_no_retry"]
+    ).post_buffer_no_retry
+    keys = []
+
+    async def fail_once(url, body, **kwargs):
+        keys.append(body["collection_id"])
+        if len(keys) == 1:
+            raise httpx.ReadError("connection lost after partial body")
+        return await original(url, body, **kwargs)
+
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_buffer_no_retry", fail_once)
+    result = await _tracer().collect_samples(Sample(), max_seq_len=7)
+    assert len(result.samples) == 1
+    assert len(keys) == 2 and keys[0] == keys[1]
+    await calls.settle()
+    assert sum(c.startswith("DELETE") for c in calls.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_decode_failure_never_acknowledges(monkeypatch):
+    calls = _CollectCalls(monkeypatch, post_outcome=b"corrupt payload")
+    with pytest.raises(ValueError, match="invalid safetensors container"):
+        await _tracer().collect_samples(Sample(), max_seq_len=7)
+    await calls.settle()
+    assert not any(c.startswith("DELETE") for c in calls.calls)

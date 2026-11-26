@@ -30,8 +30,8 @@ Failure semantics:
   for a reason the replica cannot name): ``reward=None``, so the missing-reward filter drops the group;
 * over-sampling abort: ``reward=None``; the group is discarded anyway.
 
-Each call runs in its own process under ``--custom-agent-function-mode subproc``
-(the default), so the abort hook, which runs in the rollout process, reaches
+Each call runs in its own process under ``--custom-agent-function-mode subproc``,
+so the abort hook, which runs in the rollout process, reaches
 in-flight episodes through a generation counter in a file scoped to that rollout
 process, plus removal of the rollout's containers to cut long commands short.
 
@@ -179,13 +179,17 @@ async def run(
         # Only the start can raise here: failures after it are observations inside the loop.
         episode.sandbox_start_time = time.monotonic() - t_start
         await _handle_start_failure(episode, policy, request_kwargs, e)
+    finally:
+        # A pooled worker runs many episodes in one process: an unclosed client leaks its connections.
+        await policy.close()
 
     metrics = _metrics(episode, time.monotonic() - t_start)
     logger.info(
         f"[{task_id}] episode done: reward={episode.reward} end={episode.end_reason} turns={episode.turns} "
         f"tool_calls={episode.tool_calls} tokens={episode.last_total_tokens} time={metrics['total_time']:.0f}s"
     )
-    _write_trace(episode, metadata, metrics)
+    # Off the loop: the trace lock is a blocking flock, and other episodes may share this loop.
+    await asyncio.to_thread(_write_trace, episode, metadata, metrics)
     return {"reward": episode.reward, "agent_metrics": metrics}
 
 
